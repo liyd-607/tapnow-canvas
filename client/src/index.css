@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-tn-bg text-tn-text antialiased;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-tn-bg;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-tn-border rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-tn-muted;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200 text-sm;
+  }
+  .btn-primary {
+    @apply btn bg-tn-primary text-white hover:bg-tn-primary-hover shadow-lg shadow-tn-primary/20;
+  }
+  .btn-secondary {
+    @apply btn bg-tn-panel2 text-tn-text hover:bg-tn-border border border-tn-border;
+  }
+  .btn-ghost {
+    @apply btn text-tn-muted hover:text-tn-text hover:bg-tn-panel2;
+  }
+  .btn-danger {
+    @apply btn bg-tn-error/20 text-tn-error hover:bg-tn-error/30;
+  }
+  .input {
+    @apply w-full px-4 py-2.5 bg-tn-panel2 border border-tn-border rounded-lg text-tn-text placeholder-tn-muted focus:outline-none focus:border-tn-primary focus:ring-1 focus:ring-tn-primary/50 transition-all text-sm;
+  }
+  .card {
+    @apply bg-tn-panel border border-tn-border rounded-xl;
+  }
+  .panel {
+    @apply bg-tn-panel border border-tn-border rounded-lg;
+  }
+  .chip {
+    @apply px-2.5 py-1 text-xs rounded-full bg-tn-panel2 text-tn-muted border border-tn-border;
+  }
+}
+
+/* 连线流动动画：从上游到下游传递参考数据 */
+@keyframes edge-flow-dash {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+.edge-flow {
+  animation: edge-flow-dash 1.4s linear infinite;
+}

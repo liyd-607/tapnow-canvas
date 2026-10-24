@@ -1,0 +1,107 @@
+# ===========================================
+# TapNow Canvas - 绿联 NAS 部署配置
+# 访问地址: http://<nas-ip>:9999
+# ===========================================
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: tapnow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tapnow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-tapnow_canvas}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tapnow} -d ${POSTGRES_DB:-tapnow_canvas}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tapnow-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: tapnow-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tapnow-net
+
+  api:
+    build:
+      context: ../../server
+      dockerfile: Dockerfile
+    container_name: tapnow-api
+    restart: unless-stopped
+    command: >
+      sh -c "npx prisma migrate deploy && node dist/main"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tapnow}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tapnow_canvas}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:9999}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:9999}
+      API_BASE_URL: http://localhost:3000
+      STORAGE_TYPE: local
+      UPLOAD_DIR: /app/uploads
+      SERVER_PUBLIC_URL: ${SERVER_PUBLIC_URL:-http://localhost:9999}
+      TOKENPLAN_API_KEY: ${TOKENPLAN_API_KEY:-}
+      TOKENPLAN_ROOT_URL: ${TOKENPLAN_ROOT_URL:-https://token-plan.cn-beijing.maas.aliyuncs.com}
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MINIMAX_FORCE_MOCK: ${MINIMAX_FORCE_MOCK:-false}
+      SMS_ENABLED: ${SMS_ENABLED:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - tapnow-net
+
+  front:
+    build:
+      context: ../../client
+      dockerfile: Dockerfile
+    container_name: tapnow-front
+    restart: unless-stopped
+    ports:
+      - "9999:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - uploads:/usr/share/nginx/media:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - tapnow-net
+
+networks:
+  tapnow-net:
+    driver: bridge
+
+volumes:
+  uploads:
+    driver: local

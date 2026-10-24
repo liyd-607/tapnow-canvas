@@ -1,0 +1,418 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// 租户相关
+// ============================================
+
+model Tenant {
+  id          String    @id @default(cuid())
+  name        String                    // 租户名称
+  slug        String    @unique        // 租户标识 (如: company-a)
+  plan        TenantPlan @default(FREE) // 套餐: free/pro/enterprise
+  logo        String?                  // 租户Logo
+  domain      String?                  // 自定义域名
+  settings    Json?                    // 租户配置 { primaryColor, features, ... }
+  status      TenantStatus @default(ACTIVE) // 状态
+  expiresAt   DateTime?               // 到期时间
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  // 关联
+  users       User[]
+  canvases    Canvas[]
+  skills      Skill[]
+  aiModels    AIModel[]
+  quotas      TenantQuota[]
+
+  @@index([slug])
+  @@index([status])
+}
+
+enum TenantPlan {
+  FREE      // 免费版
+  PRO       // 专业版
+  ENTERPRISE // 企业版
+}
+
+enum TenantStatus {
+  ACTIVE    // 正常
+  SUSPENDED  // 暂停
+  CANCELLED  // 已取消
+}
+
+// ============================================
+// 租户配额
+// ============================================
+
+model TenantQuota {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  resource  String   // 资源类型: images_per_month, videos_per_month, storage_gb, members, ...
+  limit     Int      // 配额上限
+  used      Int      @default(0)  // 已使用
+  resetAt   DateTime? // 重置日期 (月付/年付)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, resource])
+  @@index([tenantId])
+}
+
+// ============================================
+// 用户相关
+// ============================================
+
+model User {
+  id           String       @id @default(cuid())
+  tenantId     String
+  tenant       Tenant      @relation(fields: [tenantId], references: [id])
+  phone        String                    // 手机号 (同租户唯一)
+  password     String?                   // 密码 (可选)
+  nickname     String?
+  avatar       String?
+  role         UserRole    @default(USER) // 角色
+  status       UserStatus  @default(ACTIVE)
+  tapies       Int         @default(100) // 用户积分
+  lastLoginAt  DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  // 关联
+  generations  GenerationTask[]
+  transactions CreditTransaction[]
+  canvases    Canvas[]
+  skills      Skill[]
+  agentTasks   AgentTask[]
+  sessions    Session[]
+  assets      Asset[]
+
+  @@unique([tenantId, phone])
+  @@index([tenantId])
+  @@index([status])
+}
+
+enum UserRole {
+  OWNER      // 所有者 (租户管理员)
+  ADMIN      // 管理员
+  MEMBER     // 普通成员
+  GUEST      // 访客
+  USER       // 普通用户 (兼容旧版本)
+}
+
+enum UserStatus {
+  ACTIVE     // 正常
+  DISABLED   // 禁用
+  PENDING    // 待激活
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  token       String   @unique
+  deviceInfo  String?  // 设备信息
+  ipAddress   String?
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
+}
+
+model SmsCode {
+  id        String   @id @default(cuid())
+  tenantId  String   // 支持多租户场景下的短信验证
+  phone     String
+  code      String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, phone, createdAt])
+}
+
+// ============================================
+// 积分/配额相关
+// ============================================
+
+model CreditTransaction {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+  amount       Int      // 正数 = 充值, 负数 = 消费
+  type         CreditType
+  description  String?
+  taskId       String?
+  balanceAfter Int      // 交易后余额
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+enum CreditType {
+  GENERATION  // AI生成消耗
+  BONUS       // 赠送
+  PURCHASE    // 购买充值
+  REFUND      // 退款
+  ADMIN       // 管理员调整
+}
+
+// ============================================
+// AI 生成相关
+// ============================================
+
+model GenerationTask {
+  id          String            @id @default(cuid())
+  userId      String
+  user        User              @relation(fields: [userId], references: [id])
+  type        GenerationType
+  model       String            // 模型标识: dall-e-3, sora, ...
+  prompt      String
+  params      Json?             // { size, style, count, negativePrompt, ... }
+  status      GenerationStatus  @default(PENDING)
+  progress    Int               @default(0)
+  resultUrls  Json?             // string[]
+  creditCost  Int               @default(0)
+  errorMsg    String?
+  metadata    Json?             // 扩展信息 { requestId, duration, ... }
+  createdAt   DateTime         @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+enum GenerationType {
+  IMAGE
+  VIDEO
+  TEXT
+}
+
+enum GenerationStatus {
+  PENDING     // 等待中
+  QUEUED      // 已入队
+  PROCESSING  // 处理中
+  COMPLETED   // 已完成
+  FAILED      // 失败
+  CANCELLED   // 已取消
+}
+
+// AI模型类型
+enum ModelType {
+  IMAGE       // 图像生成
+  VIDEO       // 视频生成
+  TEXT        // 文本生成
+  AUDIO       // 音频生成
+  MULTIMODAL  // 多模态
+}
+
+// ============================================
+// 画布相关
+// ============================================
+
+model Canvas {
+  id               String          @id @default(cuid())
+  tenantId         String
+  tenant           Tenant          @relation(fields: [tenantId], references: [id])
+  userId           String
+  user             User            @relation(fields: [userId], references: [id])
+  name             String
+  description      String?
+  thumbnail        String?
+  width            Int             @default(1024)
+  height           Int             @default(1024)
+  layers           Json?           // CanvasLayer[]
+  settings         Json?           // { connections, ... }
+  isPublic         Boolean         @default(false)  // 是否公开分享
+  shareToken       String?         @unique         // 分享链接Token
+  version          Int              @default(1)    // 版本号
+  parentId         String?         // 父画布ID (版本分支)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  @@index([tenantId, userId, createdAt])
+  @@index([tenantId, isPublic])
+  @@index([shareToken])
+}
+
+// ============================================
+// AI 模型相关
+// ============================================
+
+model AIModel {
+  id         String     @id @default(cuid())
+  tenantId   String?    // null 表示平台级模型
+  tenant     Tenant?    @relation(fields: [tenantId], references: [id])
+  name       String     // 显示名称: DALL-E 3
+  modelType  ModelType  @map("type") // 模型类型 (内部字段名type避免关键字冲突)
+  modelKey   String     @unique // 内部标识: dall-e-3
+  creditCost Int        @default(5)  // 单次消耗积分
+  enabled    Boolean    @default(true)
+  config     Json?      // { apiKey, endpoint, maxTokens, ... }
+  limits     Json?      // { dailyLimit, monthlyLimit, ... }
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([modelType, enabled])
+  @@index([tenantId])
+}
+
+// ============================================
+// Agent 相关
+// ============================================
+
+model AgentTask {
+  id          String       @id @default(cuid())
+  userId      String
+  user        User         @relation(fields: [userId], references: [id])
+  vision      String       // 用户输入的创作愿景
+  status      AgentStatus @default(PLANNING)
+  progress    Int         @default(0)
+  script      Json?        // 生成的脚本
+  shots       Json?        // 预测的镜头序列
+  resultUrls  Json?        // string[]
+  errorMsg    String?
+  metadata    Json?        // 扩展信息
+  createdAt   DateTime     @default(now())
+  completedAt DateTime?
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+/// 资产库：角色 / 产品 / 风格 等可复用参考素材
+model Asset {
+  id          String     @id @default(cuid())
+  tenantId    String
+  userId      String
+  user        User       @relation(fields: [userId], references: [id])
+  name        String
+  type        AssetType // CHARACTER | PRODUCT | STYLE | REFERENCE
+  url         String     // 已持久化的可长期访问地址
+  thumbnail   String?
+  description String?
+  tags        String[]   @default([])
+  metadata    Json?
+  usageCount  Int        @default(0)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([userId, type])
+  @@index([tenantId])
+}
+
+/// 画布模板：序列化的画布图（nodes/edges），可一键新建画布
+model Template {
+  id          String   @id @default(cuid())
+  tenantId    String   @default("default")
+  ownerId     String?
+  name        String
+  description String?
+  category    String   @default("custom")
+  thumbnail   String?
+  graph       Json // CanvasGraph 序列化
+  tags        String[] @default([])
+  isPublic    Boolean  @default(true)
+  usageCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([category])
+  @@index([tenantId, isPublic])
+}
+
+enum AssetType {
+  CHARACTER // 角色/人物
+  PRODUCT   // 产品
+  STYLE     // 风格
+  REFERENCE // 通用参考
+}
+
+enum AgentStatus {
+  PLANNING        // 规划中
+  WRITING_SCRIPT  // 编写脚本
+  PREDICTING_SHOTS // 预测镜头
+  GENERATING      // 生成中
+  COMPLETED       // 已完成
+  FAILED          // 失败
+}
+
+// ============================================
+// 技能/模板相关
+// ============================================
+
+model Skill {
+  id          String      @id @default(cuid())
+  tenantId     String
+  tenant       Tenant     @relation(fields: [tenantId], references: [id])
+  authorId     String?
+  author       User?      @relation(fields: [authorId], references: [id])
+  name         String
+  slug         String
+  description  String?
+  category     SkillCategory @default(CUSTOM) // 类别
+  type         SkillType
+  config       Json?       // { presetParams, model, style, ... }
+  thumbnail    String?
+  isPublic     Boolean     @default(false)
+  usageCount   Int         @default(0)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, category])
+}
+
+enum SkillCategory {
+  OFFICIAL   // 官方
+  CUSTOM     // 自定义
+  MARKETPLACE // 市场
+}
+
+enum SkillType {
+  IMAGE
+  VIDEO
+  WORKFLOW
+}
+
+// ============================================
+// 系统配置
+// ============================================
+
+model SystemConfig {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  description String?
+  updatedAt DateTime @updatedAt
+}
+
+// ============================================
+// 操作日志
+// ============================================
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String
+  action     String   // 操作类型
+  resource   String   // 资源类型
+  resourceId String?  // 资源ID
+  details    Json?    // 详细信息
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([userId, createdAt])
+  @@index([resource, resourceId])
+}

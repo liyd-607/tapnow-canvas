@@ -1,0 +1,142 @@
+# ===========================================
+# TapNow Canvas - Kubernetes 部署配置
+# ===========================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tapnow
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tapnow-config
+  namespace: tapnow
+data:
+  NODE_ENV: "production"
+  PORT: "3000"
+  STORAGE_TYPE: "local"
+  UPLOAD_DIR: "/data/uploads"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tapnow-secrets
+  namespace: tapnow
+type: Opaque
+stringData:
+  DATABASE_URL: "postgresql://tapnow:changeme@postgres:5432/tapnow_canvas"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  JWT_SECRET: "your-super-secret-jwt-key"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tapnow-api
+  namespace: tapnow
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: tapnow-api
+  template:
+    metadata:
+      labels:
+        app: tapnow-api
+    spec:
+      containers:
+        - name: api
+          image: tapnow-api:latest
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: tapnow-config
+            - secretRef:
+                name: tapnow-secrets
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tapnow-front
+  namespace: tapnow
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: tapnow-front
+  template:
+    metadata:
+      labels:
+        app: tapnow-front
+    spec:
+      containers:
+        - name: front
+          image: tapnow-front:latest
+          ports:
+            - containerPort: 80
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tapnow-api
+  namespace: tapnow
+spec:
+  ports:
+    - port: 80
+      targetPort: 3000
+  selector:
+    app: tapnow-api
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tapnow-ingress
+  namespace: tapnow
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+    - host: tapnow.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: tapnow-api
+                port:
+                  number: 80
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: tapnow-front
+                port:
+                  number: 80

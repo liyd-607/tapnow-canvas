@@ -1,0 +1,167 @@
+/**
+ * 统一画布对象模型（Unified Canvas Graph）
+ *
+ * 画布可整体序列化为 JSON，支持：
+ *  - 节点（Node）：text | image | video | group
+ *  - 有向连线（Edge）：表达引用/生成关系，下游生成时沿入边收集上游产物
+ *  - 版本（Version）：每个节点的历史生成结果，可回退
+ *
+ * 存储位置：Canvas.settings 中以 { nodes, edges } 保存，
+ * 保持画布可整体 Fork / 克隆 / 作为模板。
+ */
+
+export type CanvasNodeType = 'text' | 'image' | 'video' | 'media' | 'group' | 'editor';
+
+export interface CanvasNodeReference {
+  /** 上游节点 id */
+  nodeId: string;
+  /** 引用用途：subject(主体/角色) | image(通用图参考) | firstFrame(视频首帧) | lastFrame(尾帧) */
+  role: 'subject' | 'image' | 'firstFrame' | 'lastFrame';
+}
+
+export interface CanvasGenerationParams {
+  model: string;
+  prompt: string;
+  negativePrompt?: string;
+  aspectRatio?: string;
+  count?: number;
+  subjectType?: 'character' | 'product';
+  referenceStrength?: number;
+  /**
+   * 模式：
+   *   generate(默认文生图) | edit(文本指令编辑原图)
+   * edit 模式下，入边/引用的第一张图作为待编辑底图。
+   */
+  mode?: 'generate' | 'edit';
+  [key: string]: any;
+}
+
+export interface CanvasNodeVersion {
+  id: string;
+  resultUrl: string;
+  prompt: string;
+  model: string;
+  params?: Record<string, any>;
+  createdAt: string;
+}
+
+export interface CanvasGraphNode {
+  id: string;
+  type: CanvasNodeType;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  zIndex: number;
+  locked: boolean;
+  visible: boolean;
+  title?: string;
+
+  /** 生成配置（image/video 节点） */
+  gen?: CanvasGenerationParams;
+
+  /** 显式引用（也可由 edges 推导；保留以便手动指定用途） */
+  references?: CanvasNodeReference[];
+
+  /** 当前采用的结果 URL */
+  resultUrl?: string | null;
+
+  /** 生成状态 */
+  status: 'idle' | 'generating' | 'completed' | 'failed';
+  error?: string | null;
+
+  /** 历史版本（最新在末尾） */
+  versions: CanvasNodeVersion[];
+
+  /** 是否折叠（折叠态只显示封面+徽章） */
+  collapsed?: boolean;
+
+  /** 所属分组 id（空表示未分组） */
+  groupId?: string;
+}
+
+export interface CanvasGraphEdge {
+  id: string;
+  from: string;
+  to: string;
+  /** 连线时指定的引用用途，默认按节点类型推导 */
+  role?: CanvasNodeReference['role'];
+}
+
+export interface CanvasGraph {
+  nodes: CanvasGraphNode[];
+  edges: CanvasGraphEdge[];
+}
+
+/**
+ * 根据边推导某节点的引用列表。
+ * 上游为 image/video 且下游为 video 时默认作为首帧，其余作为通用参考。
+ */
+export function resolveReferences(graph: CanvasGraph, nodeId: string): CanvasNodeReference[] {
+  const incoming = graph.edges.filter((e) => e.to === nodeId);
+  const target = graph.nodes.find((n) => n.id === nodeId);
+
+  const refs: CanvasNodeReference[] = [];
+  for (const edge of incoming) {
+    const source = graph.nodes.find((n) => n.id === edge.from);
+    if (!source || !source.resultUrl) continue;
+
+    let role: CanvasNodeReference['role'];
+    if (edge.role) {
+      role = edge.role;
+    } else if (target?.type === 'video') {
+      role = 'firstFrame';
+    } else {
+      role = 'image';
+    }
+    refs.push({ nodeId: source.id, role });
+  }
+
+  // 合并节点上的显式引用（去重，以 nodeId+role 为键）
+  for (const r of target?.references || []) {
+    if (!refs.some((x) => x.nodeId === r.nodeId && x.role === r.role)) {
+      refs.push(r);
+    }
+  }
+
+  return refs;
+}
+
+/**
+ * 拓扑排序：返回可执行节点顺序（被依赖者在前）。
+ * 存在环时，环内节点按原顺序追加，不会死循环。
+ */
+export function topoOrder(graph: CanvasGraph): string[] {
+  const indeg = new Map<string, number>();
+  const adj = new Map<string, string[]>();
+
+  for (const n of graph.nodes) {
+    indeg.set(n.id, 0);
+    adj.set(n.id, []);
+  }
+  for (const e of graph.edges) {
+    if (!indeg.has(e.from) || !indeg.has(e.to)) continue;
+    adj.get(e.from)!.push(e.to);
+    indeg.set(e.to, (indeg.get(e.to) || 0) + 1);
+  }
+
+  const queue = graph.nodes.filter((n) => indeg.get(n.id) === 0).map((n) => n.id);
+  const order: string[] = [];
+
+  while (queue.length) {
+    const id = queue.shift()!;
+    order.push(id);
+    for (const next of adj.get(id) || []) {
+      const d = (indeg.get(next) || 0) - 1;
+      indeg.set(next, d);
+      if (d === 0) queue.push(next);
+    }
+  }
+
+  // 环中剩余节点
+  for (const n of graph.nodes) {
+    if (!order.includes(n.id)) order.push(n.id);
+  }
+
+  return order;
+}

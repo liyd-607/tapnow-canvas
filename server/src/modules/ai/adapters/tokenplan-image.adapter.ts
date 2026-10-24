@@ -1,0 +1,182 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { BaseAIAdapter, GenerationParams, GenerationResult } from './base.adapter';
+import { sizeToWanSize } from './sizes';
+
+/**
+ * 阿里百炼 Token Plan 图片生成适配器
+ *
+ * 所有图片模型共用同一个 multimodal-generation 端点，只是 model 参数不同。
+ *   POST {ROOT}/api/v1/services/aigc/multimodal-generation/generation
+ *
+ * 请求体（messages 格式）：
+ *   {
+ *     "model": "<model-name>",
+ *     "input": { "messages": [{ "role":"user", "content":[{"text":"..."}] }] },
+ *     "parameters": { "size": "1024*1024" }
+ *   }
+ *
+ * 返回图片在：output.choices[*].message.content[*].image
+ *
+ * 每种模型一个子类，共享同一个底层实现（apiModel 不同）。
+ */
+
+abstract class TokenPlanImageBaseAdapter extends BaseAIAdapter {
+  abstract readonly apiModel: string;
+
+  private readonly logger = new Logger('TokenPlanImage');
+
+  private readonly rootUrl =
+    process.env.TOKENPLAN_ROOT_URL ||
+    'https://token-plan.cn-beijing.maas.aliyuncs.com';
+  private readonly apiKey = process.env.TOKENPLAN_API_KEY || '';
+
+  private get endpoint() {
+    return `${this.rootUrl.replace(/\/$/, '')}/api/v1/services/aigc/multimodal-generation/generation`;
+  }
+
+  private get useMock() {
+    return !this.apiKey;
+  }
+
+  async generate(params: GenerationParams): Promise<GenerationResult> {
+    const count = params.count || 1;
+    this.logger.log(
+      `[${this.modelId}] 图片生成: prompt="${params.prompt}", count=${count}, size=${params.size || '1024x1024'}, refs=${(params.references || []).length}`,
+    );
+
+    if (this.useMock) {
+      return this.mockGenerate(params);
+    }
+
+    const wanSize = sizeToWanSize(params.size || '1024x1024');
+
+    // 取所有参考图（主体/通用），支持多张参考图
+    const refs = (params.references || []).filter(
+      (r) => r.role === 'subject' || r.role === 'image',
+    );
+
+    // 该端点单次返回 1 张，多张时并发调用。
+    const results = await Promise.all(
+      Array.from({ length: count }, () =>
+        this.callOnce(params.prompt, wanSize, params.negativePrompt, refs),
+      ),
+    );
+
+    const urls = results.filter((u): u is string => Boolean(u));
+    if (urls.length === 0) {
+      return {
+        success: false,
+        error: `${this.modelName} 未返回任何图片，请检查密钥、模型权限或稍后重试`,
+      };
+    }
+
+    return { success: true, urls };
+  }
+
+  private async callOnce(
+    prompt: string,
+    size: string,
+    negativePrompt?: string,
+    refs?: Array<{ url: string }>,
+  ): Promise<string | null> {
+    try {
+      const text = negativePrompt ? `${prompt}\n避免：${negativePrompt}` : prompt;
+      const content: any[] = [];
+      // 添加所有参考图
+      if (refs && refs.length > 0) {
+        for (const ref of refs) {
+          if (ref.url) {
+            content.push({ image: ref.url });
+          }
+        }
+      }
+      content.push({ text });
+
+      const response = await fetch(this.endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.apiModel,
+          input: {
+            messages: [{ role: 'user', content }],
+          },
+          parameters: {
+            size,
+          },
+        }),
+      });
+
+      const data: any = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const msg =
+          data?.message || data?.code || `HTTP ${response.status}`;
+        this.logger.error(
+          `TokenPlan API 错误 [${this.apiModel}]: ${response.status} ${JSON.stringify(data)}`,
+        );
+        throw new Error(`阿里通义调用失败: ${msg}`);
+      }
+
+      const contents: any[] = data?.output?.choices?.[0]?.message?.content || [];
+      const imageItem = contents.find((c) => c.image);
+      const url: string | undefined = imageItem?.image;
+
+      if (!url) {
+        throw new Error('TokenPlan 返回中缺少 output.choices[0].message.content[*].image');
+      }
+      return url;
+    } catch (e) {
+      this.logger.error(`TokenPlan 单次生成失败: ${(e as Error).message}`);
+      return null;
+    }
+  }
+
+  private async mockGenerate(params: GenerationParams): Promise<GenerationResult> {
+    const count = params.count || 1;
+    const size = params.size || '1024x1024';
+    const [w, h] = size.split('x').map(Number);
+
+    this.logger.warn(`未配置 TOKENPLAN_API_KEY，[${this.modelId}] 使用 mock 模式`);
+
+    await new Promise((r) => setTimeout(r, 1000));
+
+    const urls: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const seed = Math.floor(Math.random() * 100000);
+      urls.push(`https://picsum.photos/seed/${seed}/${w || 1024}/${h || 1024}`);
+    }
+
+    return { success: true, urls };
+  }
+}
+
+/** 万相 wan2.7-image（标准版） */
+@Injectable()
+export class TokenPlanWan27Adapter extends TokenPlanImageBaseAdapter {
+  readonly modelId = 'tokenplan-wan2.7';
+  readonly modelName = '万相 wan2.7-image（标准版）';
+  readonly apiModel = 'wan2.7-image';
+  readonly creditCostPerImage = 3;
+  readonly aliases = ['tokenplan-image', 'wan2.7-image'];
+}
+
+/** 万相 wan2.7-image-pro（专业版） */
+@Injectable()
+export class TokenPlanWan27ProAdapter extends TokenPlanImageBaseAdapter {
+  readonly modelId = 'tokenplan-wan2.7-pro';
+  readonly modelName = '万相 wan2.7-image-pro（专业版）';
+  readonly apiModel = 'wan2.7-image-pro';
+  readonly creditCostPerImage = 5;
+}
+
+/** 千问 qwen-image-3.0-pro */
+@Injectable()
+export class TokenPlanQwenImage3ProAdapter extends TokenPlanImageBaseAdapter {
+  readonly modelId = 'tokenplan-qwen-image-3.0-pro';
+  readonly modelName = '千问 qwen-image-3.0-pro';
+  readonly apiModel = 'qwen-image-3.0-pro';
+  readonly creditCostPerImage = 4;
+}
