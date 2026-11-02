@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { CLASSIC_ASSETS, classicAssetUrl } from './classic-assets';
 
 export interface CreateAssetDto {
   name: string;
@@ -89,5 +90,43 @@ export class AssetsService {
       where: { id },
       data: { usageCount: { increment: 1 } },
     });
+  }
+
+  /**
+   * 一键添加经典资产包（幂等）：按「用户 + 名称」去重，
+   * 已存在的跳过，只补缺失的。
+   */
+  async seedClassics(userId: string) {
+    const existing = await this.prisma.asset.findMany({
+      where: { userId, name: { in: CLASSIC_ASSETS.map((a) => a.name) } },
+      select: { name: true },
+    });
+    const have = new Set(existing.map((a) => a.name));
+
+    const missing = CLASSIC_ASSETS.filter((a) => !have.has(a.name));
+    if (missing.length > 0) {
+      const user = await this.prisma.user.findUnique({ where: { id: userId } });
+      await this.prisma.asset.createMany({
+        data: missing.map((a) => {
+          const url = classicAssetUrl(a.mediaKey);
+          return {
+            tenantId: user?.tenantId || 'default',
+            userId,
+            name: a.name,
+            type: a.type,
+            url,
+            thumbnail: url,
+            description: a.description,
+            tags: a.tags,
+          };
+        }),
+      });
+    }
+
+    return {
+      created: missing.length,
+      skipped: CLASSIC_ASSETS.length - missing.length,
+      total: CLASSIC_ASSETS.length,
+    };
   }
 }

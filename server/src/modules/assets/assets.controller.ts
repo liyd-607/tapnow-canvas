@@ -23,6 +23,11 @@ export class AssetsController {
     return this.assetsService.create(userId, dto);
   }
 
+  @Post('seed-classics')
+  seedClassics(@CurrentUser('userId') userId: string) {
+    return this.assetsService.seedClassics(userId);
+  }
+
   @Get()
   list(
     @CurrentUser('userId') userId: string,

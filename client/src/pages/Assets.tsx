@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  FolderOpen, Search, Loader2, Upload, Trash2, User, Box, Palette, Paperclip, Save,
+  FolderOpen, Search, Loader2, Upload, Trash2, User, Box, Palette, Paperclip, Save, Sparkles,
 } from 'lucide-react';
 import { assetsApi, type Asset, type AssetType } from '../api/assets';
 import { uploadApi } from '../api/upload';
@@ -88,6 +88,20 @@ export function Assets() {
     setItems((prev) => prev.filter((a) => a.id !== id));
   };
 
+  const [seeding, setSeeding] = useState(false);
+  const seedClassics = async () => {
+    setSeeding(true);
+    setError('');
+    try {
+      await assetsApi.seedClassics();
+      await load();
+    } catch (e) {
+      setError(extractError(e));
+    } finally {
+      setSeeding(false);
+    }
+  };
+
   return (
     <div className="h-full flex flex-col">
       <div className="p-6 border-b border-tn-border">
@@ -114,6 +128,17 @@ export function Assets() {
               </button>
             ))}
           </div>
+
+          <button
+            onClick={seedClassics}
+            disabled={seeding}
+            className="flex items-center gap-1.5 px-3 py-1 text-xs rounded-full bg-tn-accent/15 text-tn-accent border border-tn-accent/30 hover:bg-tn-accent/25 transition-all disabled:opacity-50"
+            title="内置 12 个经典素材：角色 / 道具 / 风格 / 场景参考，一键入库（重复点击不会重复添加）"
+          >
+            {seeding ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+            添加经典资产
+          </button>
+
           <div className="relative w-64 ml-auto">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-tn-muted" />
             <input
@@ -188,7 +213,13 @@ export function Assets() {
             <Loader2 size={26} className="animate-spin mr-2" /> 加载…
           </div>
         ) : items.length === 0 ? (
-          <div className="text-center text-tn-muted py-12">还没有资产，上传一张图片开始建立可复用素材</div>
+          <div className="text-center text-tn-muted py-12">
+            还没有资产。
+            <button onClick={seedClassics} disabled={seeding} className="text-tn-accent hover:underline disabled:opacity-50">
+              一键添加经典资产
+            </button>
+            ，或上传一张图片开始建立可复用素材
+          </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
             {items.map((asset) => {

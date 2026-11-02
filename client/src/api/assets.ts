@@ -30,6 +30,9 @@ export const assetsApi = {
   create: (dto: CreateAssetDto): Promise<Asset> =>
     apiClient.post('/assets', dto).then((r) => r.data),
 
+  seedClassics: (): Promise<{ created: number; skipped: number; total: number }> =>
+    apiClient.post('/assets/seed-classics').then((r) => r.data),
+
   update: (id: string, dto: Partial<CreateAssetDto>): Promise<Asset> =>
     apiClient.put(`/assets/${id}`, dto).then((r) => r.data),
 
