@@ -151,7 +151,7 @@ async function main() {
           await client.callTool({
             name: 'tapnow_generate_node',
             arguments: { canvasId: scene.canvasId, nodeId: shot.nodeId },
-          }, { timeout: 180_000 }),
+          }, undefined, { timeout: 180_000 }),
         );
         const sec = ((Date.now() - t0) / 1000).toFixed(1);
         shot.status = g.status;
@@ -199,7 +199,7 @@ async function main() {
           await client.callTool({
             name: 'tapnow_generate_node',
             arguments: { canvasId, nodeId: shot.nodeId },
-          }, { timeout: 180_000 }),
+          }, undefined, { timeout: 180_000 }),
         );
         if (g.status === 'completed') {
           shot.status = 'completed';

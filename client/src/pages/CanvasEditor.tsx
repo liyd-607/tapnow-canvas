@@ -190,6 +190,12 @@ export function CanvasEditor() {
     [id],
   );
 
+  // 最新 graph 的同步镜像：连续多次 updateNode/updateGen 时（典型：多张图同时
+  // onLoad 触发「按图适配」），每次都基于最新状态计算，避免后一次 persist
+  // 拿着旧 graph 把前一次的修改整个覆盖掉。
+  const graphRef = useRef(graph);
+  graphRef.current = graph;
+
   const persist = useCallback(
     async (next: CanvasGraph) => {
       // 记录历史（在 setGraph 之前，捕获当前状态）
@@ -225,20 +231,31 @@ export function CanvasEditor() {
     setHistoryTick((t) => t + 1);
   }, [id, graph]);
 
-  const updateNode = (nodeId: string, patch: Partial<CanvasGraphNode>) =>
-    persist({ ...graph, nodes: graph.nodes.map((n) => (n.id === nodeId ? { ...n, ...patch } : n)) });
+  const updateNode = (nodeId: string, patch: Partial<CanvasGraphNode>) => {
+    const next: CanvasGraph = {
+      ...graphRef.current,
+      nodes: graphRef.current.nodes.map((n) => (n.id === nodeId ? { ...n, ...patch } : n)),
+    };
+    graphRef.current = next; // 立即推进镜像，紧跟着的下次更新不会读到旧值
+    persist(next);
+  };
 
   const updateNodeLocal = useCallback((nodeId: string, patch: Partial<CanvasGraphNode>) => {
     setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => (n.id === nodeId ? { ...n, ...patch } : n)) }));
   }, []);
 
-  const updateGen = (nodeId: string, patch: Record<string, any>) =>
-    persist({
-      ...graph,
-      nodes: graph.nodes.map((n) =>
-        n.id === nodeId ? { ...n, gen: { ...(n.gen || { model: DEFAULT_MODEL, prompt: '' }), ...patch } } : n,
+  const updateGen = (nodeId: string, patch: Record<string, any>) => {
+    const next: CanvasGraph = {
+      ...graphRef.current,
+      nodes: graphRef.current.nodes.map((n) =>
+        n.id === nodeId
+          ? { ...n, gen: { ...(n.gen || { model: DEFAULT_MODEL, prompt: '' }), ...patch } }
+          : n,
       ),
-    });
+    };
+    graphRef.current = next;
+    persist(next);
+  };
 
   const removeNode = (nodeId: string) => {
     persist({
@@ -2038,9 +2055,36 @@ function ReferencePicker({ currentNodeId, allNodes, edges, onConnect, onDisconne
 
 function ImageNode({ node, left, top, width, height, isSel, onTitleDown, onBodyClick, onResizeDown, onHover, onLeave, onUpdate, onRequestDelete, onStartLink, ringClass, isDragging, isGenerating }: any) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
   const [uploading, setUploading] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState(node.title || 'Image');
+
+  // 图片出图/上传后，按真实宽高比把节点框贴一次。
+  // 用 fittedFor 记住「已经为哪个 url 调过」——只对当前这张图生效，
+  // 用户之后手动拖右下角改尺寸不会被反复纠正回来。
+  const fittedFor = useRef<string | null>(null);
+
+  const fitToImage = (img: HTMLImageElement) => {
+    const url = node.resultUrl;
+    if (!url || fittedFor.current === url) return;
+    const ratio = img.naturalWidth / img.naturalHeight;
+    if (!Number.isFinite(ratio) || ratio <= 0) return;
+    fittedFor.current = url;
+
+    const rawW = node.width || 340;
+    const imgW = rawW - 24;              // mx-3：左右各 12
+    const nextH = Math.round(28 + 16 + imgW / ratio); // 标题栏 28 + mt-1 4 + mb-3 12
+    if (Math.abs(nextH - (node.height || 0)) <= 2) return; // 已经贴合，别多存一次
+    onUpdate({ height: nextH });
+  };
+
+  // onLoad 兜底：图片命中浏览器缓存时 onLoad 可能不触发
+  useEffect(() => {
+    const img = imgRef.current;
+    if (img?.complete && img.naturalWidth) fitToImage(img);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.resultUrl]);
 
   const handleUpload = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -2166,11 +2210,17 @@ function ImageNode({ node, left, top, width, height, isSel, onTitleDown, onBodyC
 
       <div
         onPointerDown={(e) => { e.stopPropagation(); onBodyClick(e, node); }}
-        className="mx-3 mt-1 mb-3 aspect-square bg-neutral-100 rounded-xl flex items-center justify-center overflow-hidden cursor-pointer hover:bg-white transition-colors relative"
-        style={{ width: 'calc(100% - 24px)' }}
+        className="mx-3 mt-1 mb-3 bg-neutral-100 rounded-xl flex items-center justify-center overflow-hidden cursor-pointer hover:bg-white transition-colors relative"
+        style={{ width: 'calc(100% - 24px)', height: 'calc(100% - 46px)' }}
       >
         {node.resultUrl ? (
-          <img src={node.resultUrl} alt="" className="w-full h-full object-contain" />
+          <img
+            ref={imgRef}
+            src={node.resultUrl}
+            alt=""
+            className="w-full h-full object-contain"
+            onLoad={(e) => fitToImage(e.currentTarget)}
+          />
         ) : (
           <ImageIcon size={48} className="text-neutral-700" />
         )}
