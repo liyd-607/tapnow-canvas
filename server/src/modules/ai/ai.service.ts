@@ -13,7 +13,7 @@ import {
   TokenPlanHappyHorseI2VAdapter,
   TokenPlanHappyHorseR2VAdapter,
 } from './adapters/tokenplan-video.adapter';
-import { BaseAIAdapter, GenerationParams } from './adapters/base.adapter';
+import { AICapabilities, BaseAIAdapter, GenerationParams } from './adapters/base.adapter';
 
 /**
  * AI 模型注册中心。
@@ -103,6 +103,54 @@ export class AiService implements OnModuleInit {
       if (b.id === this.defaultModelId) return 1;
       return 0;
     });
+  }
+
+  /**
+   * 模型能力元数据（对标即梦 get_common_config / capability/capsules）
+   *
+   * 返回所有已注册 adapter 的能力声明，由服务端统一下发给前端，
+   * 前端不再硬编码尺寸/比例/数量枚举。
+   */
+  listModelCapabilities() {
+    const seen = new Set<string>();
+    const out: Array<{
+      id: string;
+      name: string;
+      creditCostPerImage: number;
+      capabilities: AICapabilities;
+    }> = [];
+    for (const a of this.adapters.values()) {
+      if (seen.has(a.modelId)) continue;
+      seen.add(a.modelId);
+      out.push({
+        id: a.modelId,
+        name: a.modelName,
+        creditCostPerImage: a.creditCostPerImage,
+        capabilities: a.capabilities,
+      });
+    }
+    return out.sort((a, b) => {
+      if (a.id === this.defaultModelId) return -1;
+      if (b.id === this.defaultModelId) return 1;
+      return 0;
+    });
+  }
+
+  /** 单个模型的能力元数据；模型不存在时返回 null */
+  getModelCapabilities(modelId: string) {
+    const adapter = this.adapters.get(modelId);
+    if (!adapter) return null;
+    return {
+      id: adapter.modelId,
+      name: adapter.modelName,
+      creditCostPerImage: adapter.creditCostPerImage,
+      capabilities: adapter.capabilities,
+    };
+  }
+
+  /** 模型能力大类（IMAGE / VIDEO / ...），用于决定任务类型 */
+  getModelType(modelId: string): AICapabilities['type'] {
+    return this.getAdapter(modelId).capabilities.type;
   }
 
   async generate(modelId: string, params: GenerationParams) {

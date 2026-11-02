@@ -1,5 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { BaseAIAdapter, GenerationParams, GenerationResult } from './base.adapter';
+import {
+  AICapabilities,
+  BaseAIAdapter,
+  GenerationParams,
+  GenerationResult,
+} from './base.adapter';
 import { sizeToWanSize } from './sizes';
 
 /**
@@ -161,6 +166,18 @@ export class TokenPlanWan27Adapter extends TokenPlanImageBaseAdapter {
   readonly apiModel = 'wan2.7-image';
   readonly creditCostPerImage = 3;
   readonly aliases = ['tokenplan-image', 'wan2.7-image'];
+
+  readonly capabilities: AICapabilities = {
+    type: 'IMAGE',
+    sizes: ['1024x1024', '1280x720', '720x1280'],
+    ratios: ['1:1', '16:9', '9:16'],
+    maxCount: 4,
+    supportsReferences: true,
+    supportsNegativePrompt: true,
+    supportsSeed: false,
+    supportsTextToImage: true,
+    description: '通用文生图，支持主体/参考图输入',
+  };
 }
 
 /** 万相 wan2.7-image-pro（专业版） */
@@ -170,6 +187,18 @@ export class TokenPlanWan27ProAdapter extends TokenPlanImageBaseAdapter {
   readonly modelName = '万相 wan2.7-image-pro（专业版）';
   readonly apiModel = 'wan2.7-image-pro';
   readonly creditCostPerImage = 5;
+
+  readonly capabilities: AICapabilities = {
+    type: 'IMAGE',
+    sizes: ['1024x1024', '1280x720', '720x1280'],
+    ratios: ['1:1', '16:9', '9:16'],
+    maxCount: 4,
+    supportsReferences: true,
+    supportsNegativePrompt: true,
+    supportsSeed: true,
+    supportsTextToImage: true,
+    description: '专业版，细节与构图更佳，支持参考图与种子',
+  };
 }
 
 /** 千问 qwen-image-3.0-pro */
@@ -179,4 +208,16 @@ export class TokenPlanQwenImage3ProAdapter extends TokenPlanImageBaseAdapter {
   readonly modelName = '千问 qwen-image-3.0-pro';
   readonly apiModel = 'qwen-image-3.0-pro';
   readonly creditCostPerImage = 4;
+
+  readonly capabilities: AICapabilities = {
+    type: 'IMAGE',
+    sizes: ['1024x1024', '1280x720', '720x1280', '1664*928', '928*1664'],
+    ratios: ['1:1', '16:9', '9:16', '4:3', '3:4'],
+    maxCount: 4,
+    supportsReferences: true,
+    supportsNegativePrompt: true,
+    supportsSeed: false,
+    supportsTextToImage: true,
+    description: '文字渲染能力突出，适合海报/标题图',
+  };
 }

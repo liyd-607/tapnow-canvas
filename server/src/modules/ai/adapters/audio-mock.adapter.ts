@@ -1,4 +1,9 @@
-import { BaseAIAdapter, GenerationParams, GenerationResult } from './base.adapter';
+import {
+  AICapabilities,
+  BaseAIAdapter,
+  GenerationParams,
+  GenerationResult,
+} from './base.adapter';
 
 /**
  * Mock 音频生成适配器。
@@ -11,6 +16,19 @@ export class AudioMockAdapter extends BaseAIAdapter {
   readonly modelName = 'Mock 音频生成';
   readonly creditCostPerImage = 5;
   readonly aliases = ['audio-mock', 'tts-mock'] as const;
+
+  readonly capabilities: AICapabilities = {
+    type: 'AUDIO',
+    sizes: [],
+    ratios: [],
+    maxCount: 1,
+    durations: [5, 10, 30],
+    supportsReferences: false,
+    supportsNegativePrompt: false,
+    supportsSeed: false,
+    supportsTextToImage: true,
+    description: '本地 mock 音频生成（开发演示用）',
+  };
 
   async generate(params: GenerationParams): Promise<GenerationResult> {
     // 模拟生成延迟

@@ -57,6 +57,7 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { canvasApi } from '../api/canvas';
+import { newRequestId } from '../api/client';
 import { generationApi } from '../api/generation';
 import { assetsApi, type Asset, type AssetType } from '../api/assets';
 import { agentApi } from '../api/agent';
@@ -1231,6 +1232,11 @@ export function LibTVCanvas() {
   const pastRef = useRef<CanvasGraph[]>([]);
   const futureRef = useRef<CanvasGraph[]>([]);
   const [, setHistoryTick] = useState(0);
+
+  // ---------- 协同：乐观锁 + 串行保存 ----------
+  const versionRef = useRef<number>(0);
+  const saveChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const [syncMsg, setSyncMsg] = useState('');
   
   // 加载画布列表
   useEffect(() => {
@@ -1248,6 +1254,7 @@ export function LibTVCanvas() {
           canvasApi.detail(id!).catch(() => null),
         ]);
         setGraph(g || { nodes: [], edges: [] });
+        versionRef.current = (g as any)?.version ?? 0;
         setModels(m as AIModel[]);
         if (c) setCanvasName(c.name || '未命名工作区');
       } finally {
@@ -1264,6 +1271,36 @@ export function LibTVCanvas() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);
   
+  /** 保存画布图（串行 + 乐观锁），冲突时自动重载服务端版本 */
+  const saveGraph = useCallback(
+    (next: CanvasGraph) => {
+      saveChainRef.current = saveChainRef.current
+        .then(async () => {
+          try {
+            const res: any = await canvasApi.updateGraph(id!, next, versionRef.current);
+            versionRef.current = res?.version ?? versionRef.current;
+            setSyncMsg('');
+          } catch (err: any) {
+            if (err?.response?.status === 409) {
+              setSyncMsg('画布已在其他端更新，已为你重新加载最新版本');
+              try {
+                const fresh = await canvasApi.getGraph(id!);
+                setGraph(fresh);
+                versionRef.current = (fresh as any)?.version ?? 0;
+              } catch {
+                /* 忽略 */
+              }
+            } else {
+              console.warn('[libtv-canvas] 保存失败', err);
+            }
+          }
+        })
+        .catch(() => undefined);
+      return saveChainRef.current;
+    },
+    [id],
+  );
+
   const persist = useCallback(
     async (next: CanvasGraph) => {
       const prev = graph;
@@ -1272,7 +1309,7 @@ export function LibTVCanvas() {
         futureRef.current = [];
       }
       setGraph(next);
-      try { await canvasApi.updateGraph(id!, next); } catch { /* offline */ }
+      saveGraph(next);
     },
     [id, graph],
   );
@@ -1283,7 +1320,7 @@ export function LibTVCanvas() {
     pastRef.current = pastRef.current.slice(0, -1);
     futureRef.current = [...futureRef.current, graph].slice(-50);
     setGraph(prev);
-    canvasApi.updateGraph(id!, prev).catch(() => {});
+    saveGraph(prev);
     setHistoryTick((t) => t + 1);
   }, [id, graph]);
   
@@ -1293,7 +1330,7 @@ export function LibTVCanvas() {
     futureRef.current = futureRef.current.slice(0, -1);
     pastRef.current = [...pastRef.current, graph].slice(-50);
     setGraph(next);
-    canvasApi.updateGraph(id!, next).catch(() => {});
+    saveGraph(next);
     setHistoryTick((t) => t + 1);
   }, [id, graph]);
   
@@ -1389,6 +1426,7 @@ export function LibTVCanvas() {
     }
   };
   
+  const genKeyRef = useRef<Map<string, string>>(new globalThis.Map<string, string>());
   const generateOne = useCallback(async (nodeId: string) => {
     const n = graph.nodes.find((x) => x.id === nodeId);
     if (!n) return;
@@ -1400,8 +1438,13 @@ export function LibTVCanvas() {
     setBusy(true);
     setNotice('');
     updateNodeLocal(nodeId, { status: 'generating', error: null });
+    // 幂等键：生成中重复点击复用同一个 key，避免重复扣费/重复生成
+    const existingKey = genKeyRef.current.get(nodeId);
+    const clientRequestId =
+      n.status === 'generating' && existingKey ? existingKey : newRequestId();
+    genKeyRef.current.set(nodeId, clientRequestId);
     try {
-      await canvasApi.generateNode(id!, nodeId);
+      await canvasApi.generateNode(id!, nodeId, clientRequestId);
       const fresh = await canvasApi.getGraph(id!);
       setGraph(fresh);
       setNotice('生成完成');
@@ -1723,6 +1766,11 @@ export function LibTVCanvas() {
   
   return (
     <div className="h-screen flex flex-col bg-neutral-800 text-white overflow-hidden">
+      {syncMsg && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-amber-500 text-white text-xs rounded-lg shadow-lg">
+          {syncMsg}
+        </div>
+      )}
       {/* 左侧图层面板 */}
       {showLayers && (
         <LayerPanel

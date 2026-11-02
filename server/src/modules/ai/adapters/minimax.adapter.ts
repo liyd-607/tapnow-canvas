@@ -1,5 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { BaseAIAdapter, GenerationParams, GenerationResult } from './base.adapter';
+import {
+  AICapabilities,
+  BaseAIAdapter,
+  GenerationParams,
+  GenerationResult,
+} from './base.adapter';
 import { sizeToAspectRatio } from './sizes';
 
 /**
@@ -21,6 +26,18 @@ export class MiniMaxImageAdapter extends BaseAIAdapter {
   readonly creditCostPerImage = 5;
   // 兼容历史数据库里用户手建的 "MiniMax-H3" 记录
   readonly aliases = ['MiniMax-H3'];
+
+  readonly capabilities: AICapabilities = {
+    type: 'IMAGE',
+    sizes: ['1024x1024', '1280x720', '720x1280'],
+    ratios: ['1:1', '16:9', '9:16', '4:3', '3:4'],
+    maxCount: 4,
+    supportsReferences: true,
+    supportsNegativePrompt: false,
+    supportsSeed: false,
+    supportsTextToImage: true,
+    description: '支持主体参考（角色/商品一致）',
+  };
 
   private readonly logger = new Logger(MiniMaxImageAdapter.name);
 
@@ -168,6 +185,18 @@ export class MiniMaxTextAdapter extends BaseAIAdapter {
     process.env.MINIMAX_BASE_URL || 'https://api.minimaxi.com/v1';
   private readonly apiKey = process.env.MINIMAX_API_KEY || '';
   private readonly textModel = process.env.MINIMAX_TEXT_MODEL || 'MiniMax-M2';
+
+  readonly capabilities: AICapabilities = {
+    type: 'TEXT',
+    sizes: [],
+    ratios: [],
+    maxCount: 1,
+    supportsReferences: false,
+    supportsNegativePrompt: false,
+    supportsSeed: false,
+    supportsTextToImage: false,
+    description: '文本对话模型',
+  };
 
   private get useMock() {
     return !this.apiKey;

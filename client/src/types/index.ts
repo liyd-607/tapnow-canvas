@@ -15,13 +15,19 @@ export interface GenerationTask {
   model: string;
   prompt: string;
   params?: Record<string, any>;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
   progress: number;
   resultUrls?: string[] | null;
   creditCost: number;
   errorMsg?: string | null;
   createdAt: string;
   completedAt?: string | null;
+  /** 真实阶段：QUEUED / DISPATCHING / GENERATING / PERSISTING / COMPLETED / FAILED / CANCELLED */
+  stage?: string;
+  /** 全链路追踪号（对标即梦 logid） */
+  traceId?: string;
+  /** 客户端幂等键 */
+  clientRequestId?: string;
 }
 
 export interface AIModel {

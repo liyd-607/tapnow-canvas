@@ -161,7 +161,7 @@ export function Agent() {
           )}
 
           <button
-            onClick={handleCreate}
+            onClick={() => handleCreate()}
             disabled={creating || !vision.trim()}
             className="btn-primary w-full py-3 disabled:opacity-50 disabled:cursor-not-allowed"
           >

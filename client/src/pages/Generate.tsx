@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   Image as ImageIcon,
   Wand2,
@@ -19,9 +19,12 @@ import {
 import { useAuthStore } from '../store/authStore';
 import { generationApi } from '../api/generation';
 import { assetsApi } from '../api/assets';
+import { capabilitiesApi } from '../api/capabilities';
+import type { CapabilitiesResponse } from '../api/capabilities';
+import { newRequestId } from '../api/client';
 import type { AIModel, GenerationTask } from '../types';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { extractError } from '../api/client';
+import { extractError, extractErrorWithTrace } from '../api/client';
 
 // 扁平化后的单张图片/视频项
 interface FlatImageItem {
@@ -457,6 +460,8 @@ function PendingTaskCard({ task }: { task: GenerationTask }) {
 export function Generate() {
   const { accessToken, setTapies, user } = useAuthStore();
   const [models, setModels] = useState<AIModel[]>([]);
+  /** 服务端下发的模型能力配置（尺寸 / 比例 / 数量上限） */
+  const [capabilities, setCapabilities] = useState<CapabilitiesResponse | null>(null);
   const [selectedModel, setSelectedModel] = useState('');
   const [prompt, setPrompt] = useState('');
   const [size, setSize] = useState('1024x1024');
@@ -488,6 +493,27 @@ export function Generate() {
 
   const loadModels = async () => {
     try {
+      // 优先使用服务端下发的能力配置（即梦 get_common_config / capability/capsules 口径）
+      try {
+        const caps = await capabilitiesApi.get();
+        setCapabilities(caps);
+        const sceneModels = caps.scenes?.IMAGE?.models?.length
+          ? caps.scenes.IMAGE.models
+          : caps.models?.filter((m) => m.type === 'IMAGE') || [];
+        if (sceneModels.length) {
+          const list: AIModel[] = sceneModels.map((m) => ({
+            id: m.id,
+            name: m.name,
+            creditCostPerImage: m.creditCost,
+          }));
+          setModels(list);
+          setSelectedModel((prev) => prev || list[0].id);
+          return;
+        }
+      } catch {
+        // 能力接口不可用时回退到旧的模型列表接口
+      }
+
       const list = await generationApi.listModels();
       setModels(list);
       if (list.length > 0 && !selectedModel) {
@@ -497,6 +523,26 @@ export function Generate() {
       setError(extractError(e));
     }
   };
+
+  /** 当前选中模型的能力元数据 */
+  const modelCaps = useMemo(() => {
+    if (!capabilities || !selectedModel) return undefined;
+    return capabilities.models?.find((m) => m.id === selectedModel)?.capabilities;
+  }, [capabilities, selectedModel]);
+
+  /** 当前模型允许的最大出图数量 */
+  const maxCount = modelCaps?.maxCount ?? 4;
+
+  /** 模型切换时，校正尺寸与数量（服务端能力为准） */
+  useEffect(() => {
+    if (!modelCaps) return;
+    if (modelCaps.sizes?.length && !modelCaps.sizes.includes(size)) {
+      setSize(modelCaps.sizes[0]);
+    }
+    if (count > maxCount) {
+      setCount(maxCount);
+    }
+  }, [modelCaps, maxCount]);
 
   // 将任务列表扁平化为单张图片/视频数组（仅已完成任务）
   const flattenImages = useCallback((tasks: GenerationTask[]): FlatImageItem[] => {
@@ -575,9 +621,11 @@ export function Generate() {
   }, []);
 
   const { subscribeTask } = useWebSocket(accessToken, {
-    onProgress: (taskId, progress) => {
+    onProgress: (taskId, progress, stage) => {
       setHistory((prev) =>
-        prev.map((t) => (t.id === taskId ? { ...t, status: 'processing', progress } : t))
+        prev.map((t) =>
+          t.id === taskId ? { ...t, status: 'processing', progress, stage } : t,
+        )
       );
     },
     onCompleted: (taskId, urls) => {
@@ -595,21 +643,61 @@ export function Generate() {
       );
       setGenerating(false);
     },
+    onCancelled: (taskId, err) => {
+      setHistory((prev) =>
+        prev.map((t) =>
+          t.id === taskId ? { ...t, status: 'cancelled' as any, errorMsg: err } : t,
+        )
+      );
+      setGenerating(false);
+    },
   });
+
+  // 幂等键：一次「提交意图」内复用同一个 key，
+  // 断网重试 / 连点都不会重复扣费与重复生成（对标即梦 generate_id）
+  const requestIdRef = useRef<string>('');
+  const currentTaskIdRef = useRef<string>('');
 
   const handleGenerate = async () => {
     if (!prompt.trim() || !selectedModel) return;
     setError('');
     setGenerating(true);
+    if (!requestIdRef.current) requestIdRef.current = newRequestId();
     try {
-      const task = await generationApi.create({ model: selectedModel, prompt, size, style, count });
+      const task = await generationApi.create({
+        model: selectedModel,
+        prompt,
+        size,
+        style,
+        count: Math.min(count, maxCount),
+        clientRequestId: requestIdRef.current,
+      });
+      requestIdRef.current = '';
+      currentTaskIdRef.current = task.id;
       subscribeTask(task.id);
       setHistory((prev) => [task, ...prev]);
       if (user) {
         setTapies(user.tapies - task.creditCost);
       }
     } catch (e) {
-      setError(extractError(e));
+      setError(extractErrorWithTrace(e));
+      setGenerating(false);
+    }
+  };
+
+  /** 取消当前生成任务（对标即梦 cancel_generate） */
+  const handleCancel = async () => {
+    const taskId = currentTaskIdRef.current;
+    if (!taskId) return;
+    try {
+      await generationApi.cancel(taskId);
+      setHistory((prev) =>
+        prev.map((t) => (t.id === taskId ? { ...t, status: 'cancelled' as any } : t)),
+      );
+      showToast('已取消生成');
+    } catch (e) {
+      showToast('取消失败：' + extractError(e));
+    } finally {
       setGenerating(false);
     }
   };
@@ -741,6 +829,11 @@ export function Generate() {
                     <span className="text-sm font-medium">{m.name}</span>
                     <span className="text-xs text-tn-warning">{m.creditCostPerImage} 积分/张</span>
                   </div>
+                  {capabilities?.models?.find((c) => c.id === m.id)?.capabilities?.description && (
+                    <div className="text-[11px] text-tn-muted mt-1">
+                      {capabilities.models.find((c) => c.id === m.id)?.capabilities?.description}
+                    </div>
+                  )}
                 </button>
               ))}
               {models.length === 0 && (
@@ -830,7 +923,7 @@ export function Generate() {
           <div>
             <label className="block text-sm text-tn-muted mb-2">生成数量</label>
             <div className="flex gap-2">
-              {[1, 2, 3, 4].map((n) => (
+              {Array.from({ length: maxCount }, (_, i) => i + 1).map((n) => (
                 <button
                   key={n}
                   onClick={() => setCount(n)}
@@ -859,18 +952,29 @@ export function Generate() {
             <span className="text-tn-warning font-semibold">{estimatedCost} 积分</span>
           </div>
 
-          <button
-            onClick={handleGenerate}
-            disabled={generating || !prompt.trim() || !selectedModel}
-            className="btn-primary w-full py-2.5 lg:py-3 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-          >
-            {generating ? (
-              <Loader2 size={18} className="animate-spin inline mr-2" />
-            ) : (
-              <Wand2 size={18} className="inline mr-2" />
+          <div className="flex gap-2">
+            <button
+              onClick={handleGenerate}
+              disabled={generating || !prompt.trim() || !selectedModel}
+              className="btn-primary flex-1 py-2.5 lg:py-3 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+            >
+              {generating ? (
+                <Loader2 size={18} className="animate-spin inline mr-2" />
+              ) : (
+                <Wand2 size={18} className="inline mr-2" />
+              )}
+              {generating ? '生成中...' : '开始生成'}
+            </button>
+            {generating && (
+              <button
+                onClick={handleCancel}
+                title="取消生成"
+                className="px-3 py-2.5 lg:py-3 rounded-lg border border-tn-border text-tn-muted hover:text-tn-error hover:border-tn-error/50 text-sm"
+              >
+                <XCircle size={18} />
+              </button>
             )}
-            {generating ? '生成中...' : '开始生成'}
-          </button>
+          </div>
         </div>
       </div>
 

@@ -1,5 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { BaseAIAdapter, GenerationParams, GenerationResult } from './base.adapter';
+import {
+  AICapabilities,
+  BaseAIAdapter,
+  GenerationParams,
+  GenerationResult,
+} from './base.adapter';
 
 /**
  * MiniMax（国内版）视频生成适配器
@@ -18,6 +23,19 @@ export class MiniMaxVideoAdapter extends BaseAIAdapter {
   readonly modelId = 'minimax-video';
   readonly modelName = 'MiniMax 视频（video-01）';
   readonly creditCostPerImage = 20;
+
+  readonly capabilities: AICapabilities = {
+    type: 'VIDEO',
+    sizes: ['1280x720', '720x1280', '1024x1024'],
+    ratios: ['16:9', '9:16', '1:1'],
+    maxCount: 1,
+    durations: [6],
+    supportsReferences: true,
+    supportsNegativePrompt: false,
+    supportsSeed: false,
+    supportsTextToImage: true,
+    description: '文生视频 / 首帧图生视频',
+  };
 
   private readonly logger = new Logger(MiniMaxVideoAdapter.name);
 

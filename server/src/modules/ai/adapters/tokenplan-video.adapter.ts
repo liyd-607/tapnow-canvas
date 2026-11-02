@@ -1,5 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { BaseAIAdapter, GenerationParams, GenerationResult } from './base.adapter';
+import {
+  AICapabilities,
+  BaseAIAdapter,
+  GenerationParams,
+  GenerationResult,
+} from './base.adapter';
 
 /**
  * 阿里百炼 Token Plan 视频生成适配器
@@ -254,6 +259,19 @@ export class TokenPlanWan3VideoAdapter extends TokenPlanVideoBaseAdapter {
   readonly modelName = '万相 wan3.0-video（标准版）';
   readonly apiModel = 'wan3.0-video';
   readonly creditCostPerImage = 25;
+
+  readonly capabilities: AICapabilities = {
+    type: 'VIDEO',
+    sizes: ['1280x720', '720x1280', '1024x1024'],
+    ratios: ['16:9', '9:16', '1:1'],
+    maxCount: 1,
+    durations: [5, 10],
+    supportsReferences: true,
+    supportsNegativePrompt: false,
+    supportsSeed: false,
+    supportsTextToImage: true,
+    description: '通用文生视频，支持首帧图生视频',
+  };
 }
 
 /** HappyHorse 1.1 文生视频 */
@@ -263,6 +281,19 @@ export class TokenPlanHappyHorseT2VAdapter extends TokenPlanVideoBaseAdapter {
   readonly modelName = 'HappyHorse 1.1 文生视频';
   readonly apiModel = 'happyhorse-1.1-t2v';
   readonly creditCostPerImage = 20;
+
+  readonly capabilities: AICapabilities = {
+    type: 'VIDEO',
+    sizes: ['1280x720', '720x1280', '1024x1024'],
+    ratios: ['16:9', '9:16', '1:1'],
+    maxCount: 1,
+    durations: [5, 10],
+    supportsReferences: false,
+    supportsNegativePrompt: false,
+    supportsSeed: false,
+    supportsTextToImage: true,
+    description: '文生视频，动作幅度大',
+  };
 }
 
 /** HappyHorse 1.1 图生视频 */
@@ -272,6 +303,19 @@ export class TokenPlanHappyHorseI2VAdapter extends TokenPlanVideoBaseAdapter {
   readonly modelName = 'HappyHorse 1.1 图生视频';
   readonly apiModel = 'happyhorse-1.1-i2v';
   readonly creditCostPerImage = 22;
+
+  readonly capabilities: AICapabilities = {
+    type: 'VIDEO',
+    sizes: ['1280x720', '720x1280', '1024x1024'],
+    ratios: ['16:9', '9:16', '1:1'],
+    maxCount: 1,
+    durations: [5, 10],
+    supportsReferences: true,
+    supportsNegativePrompt: false,
+    supportsSeed: false,
+    supportsTextToImage: false,
+    description: '图生视频，需要一张首帧参考图',
+  };
 }
 
 /** HappyHorse 1.1 参考生视频 */
@@ -281,4 +325,17 @@ export class TokenPlanHappyHorseR2VAdapter extends TokenPlanVideoBaseAdapter {
   readonly modelName = 'HappyHorse 1.1 参考生视频';
   readonly apiModel = 'happyhorse-1.1-r2v';
   readonly creditCostPerImage = 25;
+
+  readonly capabilities: AICapabilities = {
+    type: 'VIDEO',
+    sizes: ['1280x720', '720x1280', '1024x1024'],
+    ratios: ['16:9', '9:16', '1:1'],
+    maxCount: 1,
+    durations: [5, 10],
+    supportsReferences: true,
+    supportsNegativePrompt: false,
+    supportsSeed: false,
+    supportsTextToImage: true,
+    description: '参考生视频，支持多张参考图',
+  };
 }

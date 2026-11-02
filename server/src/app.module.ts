@@ -15,10 +15,17 @@ import { AgentModule } from './modules/agent/agent.module';
 import { AssetsModule } from './modules/assets/assets.module';
 import { TemplatesModule } from './modules/templates/templates.module';
 import { ModelModule } from './modules/model/model.module';
+import { OrchestratorModule } from './modules/orchestrator/orchestrator.module';
+import { McpModule } from './modules/mcp/mcp.module';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { RedisModule } from './common/redis/redis.module';
 import { QueueModule } from './common/queue/queue.module';
 import { GenerationGatewayModule } from './gateways/generation-gateway.module';
+import { CapabilitiesModule } from './modules/capabilities/capabilities.module';
+import {
+  RequestContextMiddleware,
+} from './common/middleware/request-context.middleware';
+import { MiddlewareConsumer, NestModule } from '@nestjs/common';
 
 @Module({
   imports: [
@@ -46,6 +53,14 @@ import { GenerationGatewayModule } from './gateways/generation-gateway.module';
     TemplatesModule,
     ModelModule,
     GenerationGatewayModule,
+    CapabilitiesModule,
+    OrchestratorModule,
+    McpModule,
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    // 为每个请求生成/透传 requestId（对标即梦 logid）
+    consumer.apply(RequestContextMiddleware).forRoutes('*');
+  }
+}

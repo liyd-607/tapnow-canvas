@@ -7,42 +7,33 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
 
+/**
+ * 生成事件网关
+ *
+ * 事件载荷统一携带 `stage` 与 `traceId`（对标即梦 logid），
+ * 前端可据此区分「排队中 / 生成中 / 转存中」，并把追踪号报给后端排查。
+ */
 @WebSocketGateway({
-  cors: {
-    origin: [
-      'http://localhost:3000',
-      'http://127.0.0.1:3000',
-      'http://localhost:5173',
-      'http://127.0.0.1:5173',
-    ],
-    credentials: true,
-  },
-  namespace: 'generation',
+  namespace: '/generation',
+  cors: { origin: '*' },
 })
 export class GenerationGateway implements OnGatewayConnection, OnGatewayDisconnect {
-  @WebSocketServer() server: Server;
+  @WebSocketServer()
+  server: Server;
 
-  private userRooms = new Map<string, string>(); // socketId -> userId
+  private userRooms = new Map<string, string>();
 
-  constructor(
-    private jwtService: JwtService,
-    private configService: ConfigService,
-  ) {}
+  constructor(private jwtService: JwtService) {}
 
-  async handleConnection(client: Socket) {
-    const token = client.handshake.auth.token || client.handshake.query.token;
-    if (!token) {
-      client.disconnect();
-      return;
-    }
+  handleConnection(client: Socket) {
     try {
-      const payload = await this.jwtService.verifyAsync(token as string, {
-        secret: this.configService.get('JWT_SECRET') || 'dev-secret',
-      });
-      this.userRooms.set(client.id, payload.sub);
+      const token =
+        (client.handshake.auth as any)?.token ||
+        client.handshake.headers?.authorization?.replace('Bearer ', '');
+      const payload = this.jwtService.verify(token);
       client.join(`user:${payload.sub}`);
+      this.userRooms.set(client.id, payload.sub);
       console.log(`[WS] 用户 ${payload.sub} 已连接`);
     } catch (e) {
       client.disconnect();
@@ -67,15 +58,33 @@ export class GenerationGateway implements OnGatewayConnection, OnGatewayDisconne
     client.leave(`task:${taskId}`);
   }
 
-  sendProgress(userId: string, taskId: string, progress: number) {
-    this.server.to(`user:${userId}`).emit('generation:progress', { taskId, progress });
+  /** 阶段推进事件（替代旧的假进度） */
+  sendStage(userId: string, taskId: string, stage: string, progress: number, traceId?: string) {
+    this.server.to(`user:${userId}`).emit('generation:progress', {
+      taskId,
+      progress,
+      stage,
+      traceId,
+    });
   }
 
-  sendCompleted(userId: string, taskId: string, urls: string[]) {
-    this.server.to(`user:${userId}`).emit('generation:completed', { taskId, urls });
+  sendProgress(userId: string, taskId: string, progress: number, traceId?: string) {
+    this.server.to(`user:${userId}`).emit('generation:progress', {
+      taskId,
+      progress,
+      traceId,
+    });
   }
 
-  sendFailed(userId: string, taskId: string, error: string) {
-    this.server.to(`user:${userId}`).emit('generation:failed', { taskId, error });
+  sendCompleted(userId: string, taskId: string, urls: string[], traceId?: string) {
+    this.server.to(`user:${userId}`).emit('generation:completed', { taskId, urls, traceId });
+  }
+
+  sendFailed(userId: string, taskId: string, error: string, traceId?: string) {
+    this.server.to(`user:${userId}`).emit('generation:failed', { taskId, error, traceId });
+  }
+
+  sendCancelled(userId: string, taskId: string, error: string, traceId?: string) {
+    this.server.to(`user:${userId}`).emit('generation:cancelled', { taskId, error, traceId });
   }
 }

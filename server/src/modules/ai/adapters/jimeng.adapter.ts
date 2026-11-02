@@ -1,5 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { BaseAIAdapter, GenerationParams, GenerationResult } from './base.adapter';
+import {
+  AICapabilities,
+  BaseAIAdapter,
+  GenerationParams,
+  GenerationResult,
+} from './base.adapter';
 
 /**
  * 字节即梦（Jimeng）模型适配器
@@ -12,6 +17,18 @@ export class JimengAdapter extends BaseAIAdapter {
   readonly modelId = 'jimeng-t2i';
   readonly modelName = '即梦（文生图）';
   readonly creditCostPerImage = 5;
+
+  readonly capabilities: AICapabilities = {
+    type: 'IMAGE',
+    sizes: ['1024x1024', '1280x720', '720x1280'],
+    ratios: ['1:1', '16:9', '9:16'],
+    maxCount: 4,
+    supportsReferences: true,
+    supportsNegativePrompt: true,
+    supportsSeed: false,
+    supportsTextToImage: true,
+    description: '即梦（文生图）',
+  };
 
   private readonly logger = new Logger(JimengAdapter.name);
   private readonly useMock = !process.env.VOLCENGINE_ACCESS_KEY_ID;

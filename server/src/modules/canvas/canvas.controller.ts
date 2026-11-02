@@ -80,13 +80,56 @@ export class CanvasController {
     return this.canvasService.getGraph(userId, id);
   }
 
+  /**
+   * 全量保存画布图（支持乐观锁）
+   *
+   * body 兼容两种形态：
+   *   { graph: { nodes, edges }, baseVersion: 3 }   ← 新版
+   *   { nodes, edges }                                ← 旧版（无 baseVersion，跳过冲突检查）
+   */
   @Put(':id/graph')
   updateGraph(
     @CurrentUser('userId') userId: string,
     @Param('id') id: string,
-    @Body() graph: any,
+    @Body() body: any,
+    @Query('baseVersion') baseVersionQuery?: string,
   ) {
-    return this.canvasService.updateGraph(userId, id, graph);
+    const isWrapped = body && typeof body === 'object' && body.graph && typeof body.graph === 'object';
+    const graph = isWrapped ? body.graph : body;
+    const baseVersionRaw =
+      (isWrapped ? body.baseVersion : undefined) ??
+      (baseVersionQuery !== undefined ? Number(baseVersionQuery) : undefined);
+    const baseVersion =
+      baseVersionRaw === undefined || baseVersionRaw === null || Number.isNaN(Number(baseVersionRaw))
+        ? undefined
+        : Number(baseVersionRaw);
+    return this.canvasService.updateGraph(userId, id, graph, baseVersion);
+  }
+
+  /**
+   * 提交增量变更集（对标即梦 submit_changeset）
+   * POST /api/canvas/:id/changes  body: { baseVersion?, ops: [...] }
+   */
+  @Post(':id/changes')
+  submitChanges(
+    @CurrentUser('userId') userId: string,
+    @Param('id') id: string,
+    @Body() body: { baseVersion?: number; ops: any[] },
+  ) {
+    return this.canvasService.submitChanges(userId, id, body?.ops || [], body?.baseVersion);
+  }
+
+  /**
+   * 拉取增量变更集（对标即梦 fetch_changeset）
+   * GET /api/canvas/:id/changes?since=seq
+   */
+  @Get(':id/changes')
+  getChanges(
+    @CurrentUser('userId') userId: string,
+    @Param('id') id: string,
+    @Query('since') since = '0',
+  ) {
+    return this.canvasService.getChanges(userId, id, Number(since) || 0);
   }
 
   @Post(':id/nodes/:nodeId/generate')
@@ -94,8 +137,9 @@ export class CanvasController {
     @CurrentUser('userId') userId: string,
     @Param('id') id: string,
     @Param('nodeId') nodeId: string,
+    @Body() body: { clientRequestId?: string } = {},
   ) {
-    return this.canvasService.generateNode(userId, id, nodeId);
+    return this.canvasService.generateNode(userId, id, nodeId, body?.clientRequestId);
   }
 
   @Post(':id/nodes/:nodeId/attach-asset')

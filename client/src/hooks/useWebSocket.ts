@@ -1,10 +1,16 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 
-interface GenerationEvents {
-  onProgress?: (taskId: string, progress: number) => void;
-  onCompleted?: (taskId: string, urls: string[]) => void;
-  onFailed?: (taskId: string, error: string) => void;
+/**
+ * 生成事件
+ *
+ * 载荷与服务端一致，携带 stage（真实阶段）与 traceId（对标即梦 logid）。
+ */
+export interface GenerationEvents {
+  onProgress?: (taskId: string, progress: number, stage?: string, traceId?: string) => void;
+  onCompleted?: (taskId: string, urls: string[], traceId?: string) => void;
+  onFailed?: (taskId: string, error: string, traceId?: string) => void;
+  onCancelled?: (taskId: string, error: string, traceId?: string) => void;
 }
 
 export function useWebSocket(token: string | null, events: GenerationEvents = {}) {
@@ -28,17 +34,33 @@ export function useWebSocket(token: string | null, events: GenerationEvents = {}
       console.log('[WS] disconnected');
     });
 
-    socket.on('generation:progress', (data: { taskId: string; progress: number }) => {
-      events.onProgress?.(data.taskId, data.progress);
-    });
+    socket.on(
+      'generation:progress',
+      (data: { taskId: string; progress: number; stage?: string; traceId?: string }) => {
+        events.onProgress?.(data.taskId, data.progress, data.stage, data.traceId);
+      },
+    );
 
-    socket.on('generation:completed', (data: { taskId: string; urls: string[] }) => {
-      events.onCompleted?.(data.taskId, data.urls);
-    });
+    socket.on(
+      'generation:completed',
+      (data: { taskId: string; urls: string[]; traceId?: string }) => {
+        events.onCompleted?.(data.taskId, data.urls, data.traceId);
+      },
+    );
 
-    socket.on('generation:failed', (data: { taskId: string; error: string }) => {
-      events.onFailed?.(data.taskId, data.error);
-    });
+    socket.on(
+      'generation:failed',
+      (data: { taskId: string; error: string; traceId?: string }) => {
+        events.onFailed?.(data.taskId, data.error, data.traceId);
+      },
+    );
+
+    socket.on(
+      'generation:cancelled',
+      (data: { taskId: string; error: string; traceId?: string }) => {
+        events.onCancelled?.(data.taskId, data.error, data.traceId);
+      },
+    );
 
     socketRef.current = socket;
   }, [token, events]);

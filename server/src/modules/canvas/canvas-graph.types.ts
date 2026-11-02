@@ -36,6 +36,81 @@ export interface CanvasGenerationParams {
   [key: string]: any;
 }
 
+/**
+ * 节点在 LibTV 侧的同步状态。
+ *
+ * 由外部编排器（WorkBuddy）通过 /api/orchestrator 回写，
+ * 前端只读展示。状态语义严格区分「失败」与「没有产物」：
+ *   no_media = LibTV 节点已建立但未产出媒体（**不是读取失败**）
+ */
+export type CanvasNodeLibtvState =
+  | 'unmapped' // 尚未映射到 LibTV
+  | 'mapped' // 已在 LibTV 建好（run=false 预检通过）
+  | 'queued' // 已提交生成任务
+  | 'running' // 生成中（真实 LibTV 状态）
+  | 'succeeded' // 完成且有媒体
+  | 'no_media' // 完成但无媒体
+  | 'failed' // 失败
+  | 'blocked'; // 被策略阻断（如账号非会员 COMMERCIAL_BLOCKED）
+
+export interface CanvasNodeLibtv {
+  /** LibTV 节点 id（i- / v- / t- 前缀） */
+  nodeId?: string;
+  projectId?: string;
+  state?: CanvasNodeLibtvState;
+  /** LibTV 任务 id，用于断线后续查 */
+  taskId?: string;
+  /** 解析后的 LibTV modelKey（不含 libtv: 前缀） */
+  model?: string;
+  /** 实际下发给 LibTV 的扁平 params */
+  params?: Record<string, any>;
+  /** 被丢弃的参数及原因（不静默丢弃） */
+  skipped?: string[];
+  /** 用户可读说明 */
+  message?: string;
+  /** 错误码：COMMERCIAL_BLOCKED / PARAM_REJECTED / NO_MEDIA / … */
+  errorCode?: string;
+  updatedAt?: string;
+}
+
+/**
+ * 画布与 LibTV 项目的绑定状态（存于 Canvas.settings.libtv，与 settings.graph 并列）。
+ *
+ * nodeMap 是 TapNow 节点 id ↔ LibTV 节点 id 的**唯一真相源**：
+ * 两边 id 命名空间完全不同（TapNow: n_<base36>_<seq>，LibTV: i-/v-/t-/g-），
+ * 绝不能靠 id 形状推断对应关系。
+ */
+export interface CanvasLibtvBinding {
+  /** LibTV 画布 UUID（32 位 hex），不是数字 id */
+  projectId?: string;
+  projectName?: string;
+  /** LibTV 乐观锁令牌 sha256-<64hex> */
+  revision?: string;
+  nodeMap?: Record<string, {
+    libtvNodeId?: string;
+    idempotencyKey?: string;
+    promptHash?: string;
+    model?: string;
+    state?: CanvasNodeLibtvState;
+    /** 若该节点对应的参考图已上传到 LibTV，记录其媒体节点 id */
+    mediaNodeId?: string | null;
+    updatedAt?: string;
+  }>;
+  groupMap?: Record<string, string>;
+  modelCatalog?: {
+    updatedAt?: string;
+    items?: Array<{
+      modelKey: string;
+      modelName?: string;
+      displayName?: string;
+      modality?: string;
+      estimatedTime?: string;
+    }>;
+  };
+  lastSyncedAt?: string;
+  lastError?: string | null;
+}
+
 export interface CanvasNodeVersion {
   id: string;
   resultUrl: string;
@@ -78,6 +153,9 @@ export interface CanvasGraphNode {
 
   /** 所属分组 id（空表示未分组） */
   groupId?: string;
+
+  /** LibTV 同步状态（由外部编排器回写，前端只读） */
+  libtv?: CanvasNodeLibtv;
 }
 
 export interface CanvasGraphEdge {
@@ -91,6 +169,105 @@ export interface CanvasGraphEdge {
 export interface CanvasGraph {
   nodes: CanvasGraphNode[];
   edges: CanvasGraphEdge[];
+  /**
+   * 画布图版本号（服务端维护，用于乐观锁与变更集基线）。
+   * 仅在「返回给客户端」时携带，落库时会被剥离。
+   */
+  version?: number;
+  /**
+   * LibTV 绑定投影（仅出现在编排器接口的响应里）。
+   * ⚠️ 绑定数据的**权威存放位置是 Canvas.settings.libtv**（与 settings.graph 并列），
+   * 绝不会被写进 settings.graph —— saveGraph 会主动剥离该字段，避免出现两份副本。
+   */
+  libtv?: CanvasLibtvBinding;
+}
+
+/**
+ * 画布增量操作
+ *
+ * 对标即梦 infinite_canvas 的 changeset：
+ * 客户端可以只提交变更（而非整图覆盖），服务端按序应用并记录变更集。
+ */
+export type CanvasOp =
+  | { op: 'node.upsert'; node: CanvasGraphNode }
+  | { op: 'node.remove'; id: string }
+  | { op: 'edge.upsert'; edge: CanvasGraphEdge }
+  | { op: 'edge.remove'; id: string };
+
+/**
+ * 计算两张图的差异操作（node/edge 的 upsert / remove）。
+ *
+ * 服务端在保存整图时自动生成 changeset；客户端也可以直接提交 ops。
+ */
+export function diffGraph(oldGraph: CanvasGraph, newGraph: CanvasGraph): CanvasOp[] {
+  const ops: CanvasOp[] = [];
+
+  const oldNodes = new Map((oldGraph.nodes || []).map((n) => [n.id, n]));
+  const newNodes = new Map((newGraph.nodes || []).map((n) => [n.id, n]));
+
+  for (const [id, node] of newNodes) {
+    const prev = oldNodes.get(id);
+    if (!prev || JSON.stringify(prev) !== JSON.stringify(node)) {
+      ops.push({ op: 'node.upsert', node });
+    }
+  }
+  for (const id of oldNodes.keys()) {
+    if (!newNodes.has(id)) ops.push({ op: 'node.remove', id });
+  }
+
+  const oldEdges = new Map((oldGraph.edges || []).map((e) => [e.id, e]));
+  const newEdges = new Map((newGraph.edges || []).map((e) => [e.id, e]));
+
+  for (const [id, edge] of newEdges) {
+    const prev = oldEdges.get(id);
+    if (!prev || JSON.stringify(prev) !== JSON.stringify(edge)) {
+      ops.push({ op: 'edge.upsert', edge });
+    }
+  }
+  for (const id of oldEdges.keys()) {
+    if (!newEdges.has(id)) ops.push({ op: 'edge.remove', id });
+  }
+
+  return ops;
+}
+
+/**
+ * 将增量操作应用到图上（返回新的图对象，不修改入参）
+ */
+export function applyOps(graph: CanvasGraph, ops: CanvasOp[]): CanvasGraph {
+  const nodes = [...(graph.nodes || [])];
+  const edges = [...(graph.edges || [])];
+
+  for (const op of ops || []) {
+    switch (op.op) {
+      case 'node.upsert': {
+        const idx = nodes.findIndex((n) => n.id === op.node.id);
+        if (idx >= 0) nodes[idx] = op.node;
+        else nodes.push(op.node);
+        break;
+      }
+      case 'node.remove': {
+        const idx = nodes.findIndex((n) => n.id === op.id);
+        if (idx >= 0) nodes.splice(idx, 1);
+        break;
+      }
+      case 'edge.upsert': {
+        const idx = edges.findIndex((e) => e.id === op.edge.id);
+        if (idx >= 0) edges[idx] = op.edge;
+        else edges.push(op.edge);
+        break;
+      }
+      case 'edge.remove': {
+        const idx = edges.findIndex((e) => e.id === op.id);
+        if (idx >= 0) edges.splice(idx, 1);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  return { nodes, edges };
 }
 
 /**

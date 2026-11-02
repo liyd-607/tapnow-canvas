@@ -36,6 +36,7 @@ import {
   Home,
 } from 'lucide-react';
 import { canvasApi } from '../api/canvas';
+import { newRequestId } from '../api/client';
 import { generationApi } from '../api/generation';
 import { uploadApi } from '../api/upload';
 import { templatesApi } from '../api/templates';
@@ -117,6 +118,14 @@ export function CanvasEditor() {
   const futureRef = useRef<CanvasGraph[]>([]);
   const [, setHistoryTick] = useState(0); // 强制 re-render 历史栈变化
 
+  // ---------- 协同：乐观锁 + 串行保存 ----------
+  // 服务端画布图版本号（用于 baseVersion 乐观锁）
+  const versionRef = useRef<number>(0);
+  // 保存串行化：保证同一时刻只有一次保存请求在飞，避免自我冲突
+  const saveChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  // 冲突 / 同步提示
+  const [syncMsg, setSyncMsg] = useState('');
+
   useEffect(() => {
     (async () => {
       try {
@@ -126,6 +135,7 @@ export function CanvasEditor() {
           canvasApi.detail(id!).catch(() => null),
         ]);
         setGraph(g || { nodes: [], edges: [] });
+        versionRef.current = (g as any)?.version ?? 0;
         setModels(m as AIModel[]);
         if (c) setCanvasName(c.name || '');
       } finally {
@@ -143,6 +153,43 @@ export function CanvasEditor() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);
 
+  /**
+   * 保存画布图（串行 + 乐观锁）
+   *
+   * - 串行化：所有保存请求排队执行，后一次使用前一次返回的新版本号
+   * - 乐观锁：baseVersion 与服务端不一致时服务端返回 409，
+   *   此时提示用户并自动重载服务端画布，避免覆盖他人改动
+   */
+  const saveGraph = useCallback(
+    (next: CanvasGraph) => {
+      saveChainRef.current = saveChainRef.current
+        .then(async () => {
+          try {
+            const res: any = await canvasApi.updateGraph(id!, next, versionRef.current);
+            versionRef.current = res?.version ?? versionRef.current;
+            setSyncMsg('');
+          } catch (err: any) {
+            const status = err?.response?.status;
+            if (status === 409) {
+              setSyncMsg('画布已在其他端更新，已为你重新加载最新版本');
+              try {
+                const fresh = await canvasApi.getGraph(id!);
+                setGraph(fresh);
+                versionRef.current = (fresh as any)?.version ?? 0;
+              } catch {
+                /* 忽略：保留本地状态 */
+              }
+            } else {
+              console.warn('[canvas] 保存失败', err);
+            }
+          }
+        })
+        .catch(() => undefined);
+      return saveChainRef.current;
+    },
+    [id],
+  );
+
   const persist = useCallback(
     async (next: CanvasGraph) => {
       // 记录历史（在 setGraph 之前，捕获当前状态）
@@ -153,7 +200,7 @@ export function CanvasEditor() {
       }
       console.log('[persist] prev nodes:', prev.nodes.length, 'next nodes:', next.nodes.length);
       setGraph(next);
-      try { await canvasApi.updateGraph(id!, next); } catch { /* offline */ }
+      saveGraph(next);
     },
     [id, graph],
   );
@@ -164,7 +211,7 @@ export function CanvasEditor() {
     pastRef.current = pastRef.current.slice(0, -1);
     futureRef.current = [...futureRef.current, graph].slice(-50);
     setGraph(prev);
-    canvasApi.updateGraph(id!, prev).catch(() => {});
+    saveGraph(prev);
     setHistoryTick((t) => t + 1);
   }, [id, graph]);
 
@@ -174,7 +221,7 @@ export function CanvasEditor() {
     futureRef.current = futureRef.current.slice(0, -1);
     pastRef.current = [...pastRef.current, graph].slice(-50);
     setGraph(next);
-    canvasApi.updateGraph(id!, next).catch(() => {});
+    saveGraph(next);
     setHistoryTick((t) => t + 1);
   }, [id, graph]);
 
@@ -357,6 +404,7 @@ export function CanvasEditor() {
   };
 
   // 真实生成：调后端 API
+  const genKeyRef = useRef<Map<string, string>>(new globalThis.Map<string, string>());
   const generateOne = useCallback(async (nodeId: string) => {
     console.log('[generateOne] called with nodeId:', nodeId, 'graph nodes:', graph.nodes.length);
     const n = graph.nodes.find((x) => x.id === nodeId);
@@ -373,8 +421,13 @@ export function CanvasEditor() {
     setNotice('');
     // 乐观标记
     updateNodeLocal(nodeId, { status: 'generating', error: null });
+    // 幂等键：生成中重复点击复用同一个 key，避免重复扣费/重复生成
+    const existingKey = genKeyRef.current.get(nodeId);
+    const clientRequestId =
+      n.status === 'generating' && existingKey ? existingKey : newRequestId();
+    genKeyRef.current.set(nodeId, clientRequestId);
     try {
-      await canvasApi.generateNode(id!, nodeId);
+      await canvasApi.generateNode(id!, nodeId, clientRequestId);
       // 重新拉 graph
       const fresh = await canvasApi.getGraph(id!);
       setGraph(fresh);
@@ -580,8 +633,7 @@ export function CanvasEditor() {
     }
   };
   const onPointerUp = () => {
-    if (drag) canvasApi.updateGraph(id!, graph).catch(() => {});
-    if (resize) canvasApi.updateGraph(id!, graph).catch(() => {});
+    if (drag || resize) saveGraph(graph);
     setDrag(null); setResize(null); setPanning(null);
   };
 
@@ -592,6 +644,11 @@ export function CanvasEditor() {
   return (
     <CanvasErrorBoundary>
       <div className="h-full flex bg-white text-neutral-800 overflow-hidden">
+        {syncMsg && (
+          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-amber-500 text-white text-xs rounded-lg shadow-lg">
+            {syncMsg}
+          </div>
+        )}
         <LeftToolbar
           onAdd={(t) => addNode(t)}
           onToggleSearch={() => { setSearchOpen((v) => !v); setActivePanel(null); }}

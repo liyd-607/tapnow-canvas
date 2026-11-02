@@ -1,4 +1,9 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  ConflictException,
+} from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AiService } from '../ai/ai.service';
 import { CreditsService } from '../credits/credits.service';
@@ -6,6 +11,12 @@ import { ResultPersistenceService } from '../../common/persistence/result-persis
 import {
   CanvasGraph,
   CanvasGraphNode,
+  CanvasLibtvBinding,
+  CanvasNodeLibtv,
+  CanvasNodeVersion,
+  CanvasOp,
+  applyOps,
+  diffGraph,
   resolveReferences,
   topoOrder,
 } from './canvas-graph.types';
@@ -50,20 +61,101 @@ export class CanvasService {
 
   async getGraph(userId: string, canvasId: string): Promise<CanvasGraph> {
     const canvas = await this.detail(userId, canvasId);
-    const settings = (canvas.settings || {}) as any;
-    const graph = settings.graph as CanvasGraph | undefined;
-    if (graph && Array.isArray(graph.nodes) && Array.isArray(graph.edges)) {
-      return graph;
-    }
-    return this.emptyGraph();
+    return this.graphWithVersion(canvas);
   }
 
-  private async saveGraph(userId: string, canvasId: string, graph: CanvasGraph) {
+  /**
+   * 编排器用的画布图读取：除图本身外，额外投影出 LibTV 绑定状态。
+   *
+   * 绑定数据的权威存放位置是 Canvas.settings.libtv（与 settings.graph 并列），
+   * 这里只是投影一份给调用方，不会把绑定写进 settings.graph。
+   */
+  async getGraphWithBinding(
+    userId: string,
+    canvasId: string,
+  ): Promise<CanvasGraph & { libtv: CanvasLibtvBinding | null }> {
+    const canvas = await this.detail(userId, canvasId);
+    const graph = this.graphWithVersion(canvas);
+    const settings = (canvas.settings || {}) as Record<string, any>;
+    return { ...graph, libtv: (settings.libtv as CanvasLibtvBinding) ?? null };
+  }
+
+  /** 读取画布的 LibTV 绑定（不存在时返回 null） */
+  async getLibtvBinding(userId: string, canvasId: string): Promise<CanvasLibtvBinding | null> {
     const canvas = await this.detail(userId, canvasId);
     const settings = (canvas.settings || {}) as Record<string, any>;
+    return (settings.libtv as CanvasLibtvBinding) ?? null;
+  }
+
+  /**
+   * 取画布全量快照 + 版本号（对标即梦 infinite_canvas fetch_snapshot）
+   */
+  private graphWithVersion(canvas: any): CanvasGraph {
+    const settings = (canvas.settings || {}) as any;
+    const graph = settings.graph as CanvasGraph | undefined;
+    const base =
+      graph && Array.isArray(graph.nodes) && Array.isArray(graph.edges)
+        ? { nodes: graph.nodes, edges: graph.edges }
+        : this.emptyGraph();
+    return { ...base, version: canvas.graphVersion ?? 0 };
+  }
+
+  /**
+   * 保存画布图：写全量快照 + 落一条增量变更集 + 递增 graphVersion
+   *
+   * 变更集（changeset）是即梦 infinite_canvas 协同模型的核心：
+   * 全量快照是权威副本，变更集用于增量下发 / 断线续传 / 多端协同。
+   */
+  private async saveGraph(
+    userId: string,
+    canvasId: string,
+    graph: CanvasGraph,
+    opts: { actorId?: string; baseVersion?: number; ops?: CanvasOp[] } = {},
+  ): Promise<{ version: number; ops: CanvasOp[] }> {
+    const canvas = await this.detail(userId, canvasId);
+    const settings = (canvas.settings || {}) as Record<string, any>;
+    const previous = (settings.graph as CanvasGraph) || this.emptyGraph();
+
+    // 剥离仅用于传输的字段：
+    //  - version：服务端维护的乐观锁基线
+    //  - libtv：绑定投影，权威位置是 settings.libtv，不能落进 settings.graph 形成两份副本
+    const { version: _ignored, libtv: _ignoredBinding, ...clean } = graph as any;
+
+    const ops = opts.ops && opts.ops.length ? opts.ops : diffGraph(previous, clean);
+    const newVersion = (canvas.graphVersion ?? 0) + 1;
+
     await this.prisma.canvas.update({
       where: { id: canvasId },
-      data: { settings: { ...settings, graph } as any },
+      data: {
+        settings: { ...settings, graph: clean } as any,
+        graphVersion: newVersion,
+      },
+    });
+
+    if (ops.length) {
+      await this.prisma.canvasChange.create({
+        data: {
+          canvasId,
+          seq: newVersion,
+          actorId: opts.actorId ?? userId,
+          baseVersion: opts.baseVersion ?? canvas.graphVersion ?? 0,
+          ops: ops as any,
+        },
+      });
+    }
+
+    return { version: newVersion, ops };
+  }
+
+  /**
+   * 画布图冲突（乐观锁）
+   */
+  private buildConflict(canvas: any) {
+    return new ConflictException({
+      statusCode: 409,
+      message: '画布已被更新，请刷新后重试',
+      serverVersion: canvas.graphVersion ?? 0,
+      serverGraph: this.graphWithVersion(canvas),
     });
   }
 
@@ -113,11 +205,80 @@ export class CanvasService {
     return graph;
   }
 
-  async updateGraph(userId: string, canvasId: string, graph: CanvasGraph) {
-    // 确保画布归属
-    await this.detail(userId, canvasId);
-    await this.saveGraph(userId, canvasId, graph);
-    return graph;
+  /**
+   * 全量保存画布图（带乐观锁）
+   *
+   * `baseVersion` 与服务端当前 graphVersion 不一致时返回 409，
+   * 并附带 serverVersion / serverGraph，前端可据此提示并重载。
+   */
+  async updateGraph(
+    userId: string,
+    canvasId: string,
+    graph: CanvasGraph,
+    baseVersion?: number,
+  ) {
+    const canvas = await this.detail(userId, canvasId);
+    if (baseVersion !== undefined && baseVersion !== null && baseVersion !== (canvas.graphVersion ?? 0)) {
+      throw this.buildConflict(canvas);
+    }
+    const res = await this.saveGraph(userId, canvasId, graph, { baseVersion });
+    return { ...graph, version: res.version };
+  }
+
+  /**
+   * 提交增量变更（对标即梦 submit_changeset）
+   *
+   * POST /api/canvas/:id/changes
+   * body: { baseVersion?, ops: CanvasOp[] }
+   */
+  async submitChanges(
+    userId: string,
+    canvasId: string,
+    ops: CanvasOp[],
+    baseVersion?: number,
+  ) {
+    const canvas = await this.detail(userId, canvasId);
+    if (!Array.isArray(ops) || ops.length === 0) {
+      throw new BadRequestException('变更集不能为空');
+    }
+    if (baseVersion !== undefined && baseVersion !== null && baseVersion !== (canvas.graphVersion ?? 0)) {
+      throw this.buildConflict(canvas);
+    }
+
+    const current = this.graphWithVersion(canvas);
+    const next = applyOps(current, ops);
+    const res = await this.saveGraph(userId, canvasId, next, {
+      baseVersion,
+      ops,
+      actorId: userId,
+    });
+
+    return {
+      graph: { ...next, version: res.version },
+      version: res.version,
+      applied: ops.length,
+    };
+  }
+
+  /**
+   * 拉取增量变更（对标即梦 fetch_changeset）
+   *
+   * GET /api/canvas/:id/changes?since=seq
+   */
+  async getChanges(userId: string, canvasId: string, since = 0) {
+    const canvas = await this.detail(userId, canvasId);
+    const changes = await this.prisma.canvasChange.findMany({
+      where: { canvasId, seq: { gt: since } },
+      orderBy: { seq: 'asc' },
+      take: 500,
+    });
+    const latestSeq = changes.length ? changes[changes.length - 1].seq : since;
+    return {
+      changes,
+      version: canvas.graphVersion ?? 0,
+      latestSeq,
+      hasMore: latestSeq < (canvas.graphVersion ?? 0),
+    };
   }
 
   /**
@@ -225,6 +386,8 @@ export class CanvasService {
   }
 
   async updateSettings(userId: string, canvasId: string, settings: Record<string, any>) {
+    // ⚠️ 注意：这里是 **整体替换** settings，会抹掉 settings.graph 与 settings.libtv。
+    // 写 LibTV 绑定请务必走 updateLibtvBinding（merge + CAS）。
     const canvas = await this.detail(userId, canvasId);
     return this.prisma.canvas.update({
       where: { id: canvas.id },
@@ -232,12 +395,111 @@ export class CanvasService {
     });
   }
 
+  // ---------- 编排器回写（外部 Agent 驱动 LibTV 后写回结果） ----------
+
+  /**
+   * 写回单个节点的生成结果 / 状态。
+   *
+   * 为什么不用 `PUT /canvas/:id/graph`：
+   *   那个接口是**整图替换**，编排器回写会抹掉用户此刻在 UI 上的并发编辑。
+   *   这里只重读最新图 → 只合并这一个节点 → 走 saveGraph（顺带产出 changeset）。
+   *
+   * 乐观锁沿用既有语义：baseVersion 与服务端 graphVersion 不一致 → 409 + serverGraph，
+   * 编排器重读后重试。
+   */
+  async writeNodeResult(
+    userId: string,
+    canvasId: string,
+    nodeId: string,
+    dto: {
+      status?: 'idle' | 'generating' | 'completed' | 'failed';
+      resultUrl?: string | null;
+      versions?: CanvasNodeVersion[];
+      libtv?: CanvasNodeLibtv;
+      baseVersion?: number;
+    },
+  ) {
+    const canvas = await this.detail(userId, canvasId);
+    if (
+      dto.baseVersion !== undefined &&
+      dto.baseVersion !== null &&
+      dto.baseVersion !== (canvas.graphVersion ?? 0)
+    ) {
+      throw this.buildConflict(canvas);
+    }
+
+    const graph = this.graphWithVersion(canvas);
+    const node = graph.nodes.find((n) => n.id === nodeId);
+    if (!node) throw new NotFoundException('节点不存在');
+
+    if (dto.status) node.status = dto.status;
+    if (dto.resultUrl !== undefined) node.resultUrl = dto.resultUrl;
+    if (dto.versions?.length) {
+      node.versions = [...(node.versions || []), ...dto.versions];
+    }
+    if (dto.libtv) {
+      node.libtv = { ...(node.libtv || {}), ...dto.libtv };
+      // 错误文案必须来自 LibTV 的真实原因，不能退化成通用「生成失败」
+      node.error = dto.libtv.errorCode
+        ? dto.libtv.message ?? dto.libtv.errorCode
+        : null;
+    }
+
+    const res = await this.saveGraph(userId, canvasId, graph, {
+      baseVersion: dto.baseVersion,
+      actorId: userId,
+    });
+
+    return {
+      ok: true,
+      node: graph.nodes.find((n) => n.id === nodeId),
+      version: res.version,
+    };
+  }
+
+  /**
+   * 写回 LibTV 绑定状态（projectId / nodeMap / revision / modelCatalog）。
+   *
+   * 走 merge + CAS（updatedAt），避免与前端 persist() 的整图写入互相覆盖。
+   */
+  async updateLibtvBinding(
+    userId: string,
+    canvasId: string,
+    patch: Partial<CanvasLibtvBinding>,
+  ): Promise<CanvasLibtvBinding> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const canvas = await this.detail(userId, canvasId);
+      const settings = (canvas.settings || {}) as Record<string, any>;
+      const current = (settings.libtv as CanvasLibtvBinding) || {};
+
+      const next: CanvasLibtvBinding = { ...current, ...patch };
+      // 深层合并：调用方只传部分字段时不丢已有数据
+      if (patch.nodeMap) next.nodeMap = { ...current.nodeMap, ...patch.nodeMap };
+      if (patch.groupMap) next.groupMap = { ...current.groupMap, ...patch.groupMap };
+      if (patch.modelCatalog) {
+        next.modelCatalog = { ...current.modelCatalog, ...patch.modelCatalog };
+      }
+
+      const res = await this.prisma.canvas.updateMany({
+        where: { id: canvasId, userId, updatedAt: canvas.updatedAt },
+        data: { settings: { ...settings, libtv: next } as any },
+      });
+      if (res.count > 0) return next;
+    }
+    throw new ConflictException('画布已被并发修改，请重新读取后重试');
+  }
+
   // ---------- 节点生成（沿连线透传引用） ----------
 
   /**
    * 生成单个节点：自动沿入边收集上游产物作为参考图。
    */
-  async generateNode(userId: string, canvasId: string, nodeId: string) {
+  async generateNode(
+    userId: string,
+    canvasId: string,
+    nodeId: string,
+    clientRequestId?: string,
+  ) {
     const graph = await this.getGraph(userId, canvasId);
     const node = graph.nodes.find((n) => n.id === nodeId);
     if (!node) {
@@ -247,7 +509,15 @@ export class CanvasService {
       throw new BadRequestException('节点提示词不能为空');
     }
 
-    return this.runNode(userId, canvasId, graph, node);
+    // 幂等：同一 clientRequestId 重复提交时，若节点已在生成/已完成，直接返回当前图，
+    // 避免「用户连点 / 断网重试」造成重复扣费与重复生成（对标即梦 generate_id）。
+    if (clientRequestId && node.gen?.lastRequestId === clientRequestId) {
+      if (node.status === 'generating' || node.status === 'completed') {
+        return graph;
+      }
+    }
+
+    return this.runNode(userId, canvasId, graph, node, clientRequestId);
   }
 
   /**
@@ -298,6 +568,7 @@ export class CanvasService {
     canvasId: string,
     graph: CanvasGraph,
     node: CanvasGraphNode,
+    clientRequestId?: string,
   ): Promise<CanvasGraph> {
     const gen = node.gen!;
     const count = gen.count || 1;
@@ -327,9 +598,12 @@ export class CanvasService {
       return this.getGraph(userId, canvasId);
     }
 
-    // 标记生成中
+    // 标记生成中（同时记录幂等键，供重复提交识别）
     node.status = 'generating';
     node.error = null;
+    if (clientRequestId) {
+      node.gen = { ...gen, lastRequestId: clientRequestId };
+    }
     await this.saveGraph(userId, canvasId, graph);
 
     // 扣积分

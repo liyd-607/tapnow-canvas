@@ -60,4 +60,6 @@ export interface CanvasGraphEdge {
 export interface CanvasGraph {
   nodes: CanvasGraphNode[];
   edges: CanvasGraphEdge[];
+  /** 画布图版本号（服务端维护，用于乐观锁 / 变更集基线） */
+  version?: number;
 }
