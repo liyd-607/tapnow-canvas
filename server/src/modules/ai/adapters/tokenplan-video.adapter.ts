@@ -36,8 +36,9 @@ abstract class TokenPlanVideoBaseAdapter extends BaseAIAdapter {
   private readonly apiKey = process.env.TOKENPLAN_API_KEY || '';
 
   // 视频为异步任务，轮询设置
-  private readonly pollIntervalMs = 15000;
-  private readonly maxWaitMs = 5 * 60 * 1000;
+  // 实测：万相 wan3.0-video 约 5.5 分钟完成（排队+生成），5 分钟窗口会差 20 秒超时
+  private readonly pollIntervalMs = Number(process.env.TAPNOW_VIDEO_POLL_INTERVAL_MS ?? 8000);
+  private readonly maxWaitMs = Number(process.env.TAPNOW_VIDEO_MAX_WAIT_MS ?? 15 * 60 * 1000);
 
   private get submitEndpoint() {
     return `${this.rootUrl.replace(/\/$/, '')}/api/v1/services/aigc/video-generation/video-synthesis`;
