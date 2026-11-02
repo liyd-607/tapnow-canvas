@@ -65,7 +65,7 @@ import type { CanvasGraph, CanvasGraphNode, CanvasNodeType } from '../api/canvas
 import type { AIModel } from '../types';
 import { useAuthStore } from '../store/authStore';
 
-const DEFAULT_MODEL = 'minimax-image';
+const DEFAULT_MODEL = 'tokenplan-wan2.7';
 let idSeq = 1;
 const nextId = (p: string) => `${p}_${Date.now().toString(36)}_${idSeq++}`;
 

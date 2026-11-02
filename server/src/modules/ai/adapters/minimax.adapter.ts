@@ -66,21 +66,52 @@ export class MiniMaxImageAdapter extends BaseAIAdapter {
     const subjectRefs = (params.references || []).filter((r) => r.role === 'subject' || r.role === 'image');
 
     // image_generation 单次只稳定返回 1 张，多张时并发调用。
-    const results = await Promise.all(
+    // 用 allSettled 而不是 all：单张失败不能让整批 reject，
+    // 且必须把供应商给的真实原因（额度用尽 / 参数非法 / 密钥无效）留到外层。
+    const settled = await Promise.allSettled(
       Array.from({ length: count }, () =>
         this.callOnce(params.prompt, aspectRatio, params.negativePrompt, subjectRefs, params.subjectType),
       ),
     );
 
-    const urls = results.filter((u): u is string => Boolean(u));
+    const urls: string[] = [];
+    const errors: string[] = [];
+    for (const s of settled) {
+      if (s.status === 'fulfilled' && s.value) urls.push(s.value);
+      else if (s.status === 'rejected') errors.push(String((s.reason as Error)?.message ?? s.reason));
+    }
+
     if (urls.length === 0) {
-      return {
-        success: false,
-        error: 'MiniMax 未返回任何图片，请检查密钥、端点或稍后重试',
-      };
+      return { success: false, error: this.describeFailure(errors) };
     }
 
     return { success: true, urls };
+  }
+
+  /**
+   * 把供应商的原始报错翻译成「能照着做」的提示。
+   *
+   * 之前这里一律返回「请检查密钥、端点或稍后重试」，结果把「额度用尽」
+   * 说成了「密钥有问题」，用户对着没问题的密钥查半天。现在按类别给建议。
+   */
+  private describeFailure(errors: string[]): string {
+    const raw = errors.filter(Boolean);
+    if (raw.length === 0) {
+      return 'MiniMax 未返回任何图片，请检查密钥、端点或稍后重试';
+    }
+    const joined = raw.join(' / ');
+    const short = raw[0];
+
+    if (/用量上限|Token Plan|额度|quota|insufficient/i.test(short)) {
+      return `MiniMax 额度已用尽（${joined}）。请到 MiniMax 开放平台充值或升级 Token Plan，或改用其它模型（如阿里百炼 wan2.7）。`;
+    }
+    if (/invalid api key|2049|鉴权|Unauthorized/i.test(short)) {
+      return `MiniMax 密钥无效（${joined}）。国内 key 必须以 sk-cp- 开头且只能走 api.minimaxi.com，请核对 MINIMAX_API_KEY 与 MINIMAX_BASE_URL。`;
+    }
+    if (/参数|invalid_parameter|2049|size|aspect/i.test(short)) {
+      return `MiniMax 请求参数被拒（${joined}）。请检查画幅比例与参考图 URL 是否可被公网访问。`;
+    }
+    return `MiniMax 调用失败：${joined}`;
   }
 
   private async callOnce(

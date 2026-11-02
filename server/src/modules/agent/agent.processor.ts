@@ -11,7 +11,10 @@ import { AGENT_QUEUE } from '../../common/queue/queue.service';
 import { randomUUID } from 'crypto';
 import type { CanvasGraphNode } from '../canvas/canvas-graph.types';
 
-const IMAGE_MODEL = process.env.AGENT_IMAGE_MODEL || 'minimax-image';
+const IMAGE_MODEL =
+  process.env.AGENT_IMAGE_MODEL ||
+  process.env.TAPNOW_DEFAULT_IMAGE_MODEL ||
+  'tokenplan-wan2.7';
 
 @Injectable()
 @Processor(AGENT_QUEUE)

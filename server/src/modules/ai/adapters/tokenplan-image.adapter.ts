@@ -61,21 +61,49 @@ abstract class TokenPlanImageBaseAdapter extends BaseAIAdapter {
     );
 
     // 该端点单次返回 1 张，多张时并发调用。
-    const results = await Promise.all(
+    // 用 allSettled 保留供应商真实报错，不退化成「请检查密钥」这类无信息量的提示。
+    const settled = await Promise.allSettled(
       Array.from({ length: count }, () =>
         this.callOnce(params.prompt, wanSize, params.negativePrompt, refs),
       ),
     );
 
-    const urls = results.filter((u): u is string => Boolean(u));
+    const urls: string[] = [];
+    const errors: string[] = [];
+    for (const s of settled) {
+      if (s.status === 'fulfilled' && s.value) urls.push(s.value);
+      else if (s.status === 'rejected') errors.push(String((s.reason as Error)?.message ?? s.reason));
+    }
+
     if (urls.length === 0) {
-      return {
-        success: false,
-        error: `${this.modelName} 未返回任何图片，请检查密钥、模型权限或稍后重试`,
-      };
+      return { success: false, error: this.describeFailure(errors) };
     }
 
     return { success: true, urls };
+  }
+
+  /** 把供应商原始报错翻译成可执行的建议（别再把「额度用尽」说成「密钥有问题」） */
+  private describeFailure(errors: string[]): string {
+    const raw = errors.filter(Boolean);
+    if (raw.length === 0) {
+      return `${this.modelName} 未返回任何图片，请检查密钥、模型权限或稍后重试`;
+    }
+    const short = raw[0];
+    const joined = raw.join(' / ');
+
+    if (/url error|please check url/i.test(short)) {
+      return `${this.modelName} 端点或请求格式被拒（${joined}）。当前走的是百炼 multimodal-generation 端点，请核对 TOKENPLAN_ROOT_URL 是否为 https://token-plan.<region>.maas.aliyuncs.com（不要带 /compatible-mode/v1）。`;
+    }
+    if (/额度|quota|insufficient|arrears|欠费|已过期/i.test(short)) {
+      return `${this.modelName} 额度不足（${joined}）。请到百炼控制台确认该模型已开通并有可用额度。`;
+    }
+    if (/api.?key|Unauthorized|鉴权|401/i.test(short)) {
+      return `${this.modelName} 密钥无效（${joined}）。请核对 TOKENPLAN_API_KEY。`;
+    }
+    if (/model|权限|not found|不存在/i.test(short)) {
+      return `${this.modelName} 模型不可用（${joined}）。请确认账号已开通 ${this.apiModel} 的调用权限。`;
+    }
+    return `${this.modelName} 调用失败：${joined}`;
   }
 
   private async callOnce(
@@ -117,8 +145,12 @@ abstract class TokenPlanImageBaseAdapter extends BaseAIAdapter {
       const data: any = await response.json().catch(() => null);
 
       if (!response.ok) {
+        // 百炼的错误体是 { error: { message, code } }，也兼容顶层 message/code
         const msg =
-          data?.message || data?.code || `HTTP ${response.status}`;
+          data?.error?.message ||
+          data?.message ||
+          data?.code ||
+          `HTTP ${response.status}`;
         this.logger.error(
           `TokenPlan API 错误 [${this.apiModel}]: ${response.status} ${JSON.stringify(data)}`,
         );

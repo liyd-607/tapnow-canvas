@@ -50,10 +50,20 @@ const DEFAULT_TITLE: Record<string, string> = {
   group: '分组',
 };
 
+/**
+ * 默认模型走 env 而不是写死。
+ *
+ * 历史上默认写死 minimax-image，结果 MiniMax 账号额度用尽时，
+ * 每次新建图片节点都默认落在跑不动的供应商上，必须手动改模型才出得了图。
+ * 现在用 env 兜底，换供应商改一处即可，不用翻代码。
+ */
 const DEFAULT_MODEL: Record<string, string> = {
-  image: 'minimax-image',
-  video: 'minimax-video',
+  image: process.env.TAPNOW_DEFAULT_IMAGE_MODEL || 'tokenplan-wan2.7',
+  video: process.env.TAPNOW_DEFAULT_VIDEO_MODEL || 'minimax-video',
 };
+
+const FALLBACK_IMAGE_MODEL =
+  process.env.TAPNOW_DEFAULT_IMAGE_MODEL || 'tokenplan-wan2.7';
 
 @Injectable()
 export class McpToolsService {
@@ -149,7 +159,7 @@ export class McpToolsService {
 
     if (type === 'image' || type === 'video') {
       node.gen = {
-        model: input.model ?? DEFAULT_MODEL[type] ?? 'minimax-image',
+        model: input.model ?? DEFAULT_MODEL[type] ?? FALLBACK_IMAGE_MODEL,
         prompt: input.prompt ?? '',
         count: input.count ?? 1,
         ...(input.aspectRatio ? { aspectRatio: input.aspectRatio } : {}),
@@ -202,7 +212,7 @@ export class McpToolsService {
         const prev = node.gen ?? ({} as any);
         node.gen = {
           ...prev,
-          model: patch.model ?? prev.model ?? 'minimax-image',
+          model: patch.model ?? prev.model ?? FALLBACK_IMAGE_MODEL,
           prompt: patch.prompt ?? prev.prompt ?? '',
           count: patch.count ?? prev.count ?? 1,
           ...(patch.aspectRatio ?? prev.aspectRatio

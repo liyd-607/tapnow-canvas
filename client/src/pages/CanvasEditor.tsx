@@ -47,7 +47,7 @@ import { agentApi } from '../api/agent';
 import type { CanvasGraph, CanvasGraphNode, CanvasNodeType } from '../api/canvas-graph';
 import type { AIModel } from '../types';
 
-const DEFAULT_MODEL = 'minimax-image';
+const DEFAULT_MODEL = 'tokenplan-wan2.7';
 let idSeq = 1;
 const nextId = (p: string) => `${p}_${Date.now().toString(36)}_${idSeq++}`;
 
@@ -1548,7 +1548,7 @@ function SettingsPanel({ canvasId, canvasName, onUpdate, onCreateTemplate, onClo
   onClose: () => void;
 }) {
   const [name, setName] = useState(canvasName || '');
-  const [defaultModel, setDefaultModel] = useState('minimax-image');
+  const [defaultModel, setDefaultModel] = useState('tokenplan-wan2.7');
   const [defaultRatio, setDefaultRatio] = useState('1024x1024');
   const [defaultCount, setDefaultCount] = useState(1);
   const [showTemplateForm, setShowTemplateForm] = useState(false);
